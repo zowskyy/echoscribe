@@ -121,9 +121,9 @@ sealed class TrayAppContext : ApplicationContext
         billingMenu.DropDownItems.Add("Open xAI Billing", null, (_, _) => OpenUrl("https://console.x.ai/team/default/billing"));
         menu.Items.Add(billingMenu);
         var browserMenu = new ToolStripMenuItem("Browser Extension");
-        browserMenu.DropDownItems.Add("Register Chrome Native Host", null, (_, _) => InstallBrowserExtension());
-        browserMenu.DropDownItems.Add("Open extension folder", null, (_, _) => OpenBrowserExtensionFolder());
-        browserMenu.DropDownItems.Add("Open chrome://extensions", null, (_, _) => OpenUrl("chrome://extensions"));
+        browserMenu.DropDownItems.Add("Register browser native hosts", null, (_, _) => InstallBrowserExtension());
+        browserMenu.DropDownItems.Add("Open extension folders", null, (_, _) => OpenBrowserExtensionFolders());
+        browserMenu.DropDownItems.Add("Open browser setup pages", null, (_, _) => OpenBrowserSetupPages());
         menu.Items.Add(browserMenu);
         menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
         menu.Items.Add("Open config", null, (_, _) => Process.Start(new ProcessStartInfo
@@ -142,16 +142,12 @@ sealed class TrayAppContext : ApplicationContext
         {
             var result = BrowserExtensionInstaller.Register();
             MessageBox.Show(
-                $"Native host registered.\n\nExtension ID:\n{result.ExtensionId}\n\nExtension folder:\n{result.ExtensionDirectory}\n\nChrome will open chrome://extensions. Enable developer mode there and select this folder with \"Load unpacked\".",
+                $"Native hosts registered.\n\nChromium extension ID:\n{result.ChromiumExtensionId}\n\nChromium extension folder:\n{result.ChromiumExtensionDirectory}\n\nFirefox extension ID:\n{result.FirefoxExtensionId}\n\nFirefox manifest:\n{result.FirefoxExtensionManifestPath}\n\nChromium browsers: enable developer mode and load the Chromium extension folder.\nFirefox: use about:debugging and load the Firefox manifest as a temporary add-on.",
                 "EchoScribe Browser Extension",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
-            OpenUrl("chrome://extensions");
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = result.ExtensionDirectory,
-                UseShellExecute = true
-            });
+            BrowserExtensionInstaller.OpenExtensionDirectories();
+            OpenBrowserSetupPages();
         }
         catch (Exception ex)
         {
@@ -163,14 +159,22 @@ sealed class TrayAppContext : ApplicationContext
         }
     }
 
-    private static void OpenBrowserExtensionFolder()
+    private static void OpenBrowserExtensionFolders()
     {
-        var path = BrowserExtensionInstaller.FindExtensionDirectory();
-        Process.Start(new ProcessStartInfo
+        BrowserExtensionInstaller.OpenExtensionDirectories();
+    }
+
+    private static void OpenBrowserSetupPages()
+    {
+        var opened = BrowserExtensionInstaller.OpenBrowserSetupPages();
+        if (opened.Count == 0)
         {
-            FileName = path,
-            UseShellExecute = true
-        });
+            MessageBox.Show(
+                "No supported browser executable was found. Open the extension page manually in Chrome, Edge, Brave, Chromium, or Firefox.",
+                "EchoScribe Browser Extension",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
     }
 
     private void SwitchProvider(string provider)
@@ -1501,7 +1505,7 @@ sealed class SettingsForm : Form
     {
         var tab = new TabPage("Web Summary");
         var layout = CreateFormLayout(6);
-        AddHeader(layout, 0, "Chrome summaries");
+        AddHeader(layout, 0, "Browser summaries");
         AddRow(layout, 1, "Summary-Provider", summaryProviderBox);
         AddRow(layout, 2, "Summary model", summaryModelBox);
         layout.Controls.Add(new Label(), 0, 3);
@@ -2542,39 +2546,123 @@ static class AppLog
     }
 }
 
-sealed record BrowserExtensionInstallResult(string ExtensionId, string ExtensionDirectory, string NativeHostManifestPath);
+sealed record BrowserExtensionInstallResult(
+    string ChromiumExtensionId,
+    string ChromiumExtensionDirectory,
+    string FirefoxExtensionId,
+    string FirefoxExtensionManifestPath,
+    string ChromiumNativeHostManifestPath,
+    string FirefoxNativeHostManifestPath,
+    IReadOnlyList<string> RegistryKeys);
 
 static class BrowserExtensionInstaller
 {
     private const string NativeHostName = "de.echoscribe.nativehost";
+    private const string FirefoxExtensionId = "echoscribe@wean.de";
+    private static readonly UTF8Encoding Utf8NoBom = new(false);
+    private static readonly string[] ChromiumRegistryBases =
+    [
+        @"Software\Google\Chrome\NativeMessagingHosts",
+        @"Software\Chromium\NativeMessagingHosts",
+        @"Software\Microsoft\Edge\NativeMessagingHosts",
+        @"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts"
+    ];
 
     public static BrowserExtensionInstallResult Register()
     {
-        var extensionDirectory = FindExtensionDirectory();
-        var extensionId = ReadExtensionId(extensionDirectory);
+        var chromiumExtensionDirectory = FindChromiumExtensionDirectory();
+        var firefoxExtensionDirectory = FindFirefoxExtensionDirectory();
+        var firefoxExtensionManifestPath = Path.Combine(firefoxExtensionDirectory, "manifest.json");
+        var extensionId = ReadExtensionId(chromiumExtensionDirectory);
         var hostPath = FindNativeHostPath();
-        var manifestPath = Path.Combine(Path.GetDirectoryName(hostPath) ?? AppContext.BaseDirectory, $"{NativeHostName}.json");
+        var nativeHostDirectory = Path.GetDirectoryName(hostPath) ?? AppContext.BaseDirectory;
+        var chromiumManifestPath = Path.Combine(nativeHostDirectory, $"{NativeHostName}.json");
+        var firefoxManifestPath = Path.Combine(nativeHostDirectory, $"{NativeHostName}.firefox.json");
 
-        var payload = new Dictionary<string, object>
+        WriteNativeHostManifest(chromiumManifestPath, new Dictionary<string, object>
         {
             ["name"] = NativeHostName,
             ["description"] = "EchoScribe Web Summary Native Host",
             ["path"] = hostPath,
             ["type"] = "stdio",
             ["allowed_origins"] = new[] { $"chrome-extension://{extensionId}/" }
-        };
+        });
+        WriteNativeHostManifest(firefoxManifestPath, new Dictionary<string, object>
+        {
+            ["name"] = NativeHostName,
+            ["description"] = "EchoScribe Web Summary Native Host",
+            ["path"] = hostPath,
+            ["type"] = "stdio",
+            ["allowed_extensions"] = new[] { FirefoxExtensionId }
+        });
 
-        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
-        File.WriteAllText(manifestPath, json, Encoding.UTF8);
+        var registryKeys = new List<string>();
+        foreach (var registryBase in ChromiumRegistryBases)
+        {
+            registryKeys.Add(RegisterNativeMessagingHost($@"{registryBase}\{NativeHostName}", chromiumManifestPath));
+        }
+        registryKeys.Add(RegisterNativeMessagingHost($@"Software\Mozilla\NativeMessagingHosts\{NativeHostName}", firefoxManifestPath));
 
-        using var key = Registry.CurrentUser.CreateSubKey($@"Software\Google\Chrome\NativeMessagingHosts\{NativeHostName}", writable: true)
-            ?? throw new InvalidOperationException("Chrome Native Messaging registry key could not be created.");
-        key.SetValue("", manifestPath, RegistryValueKind.String);
-
-        return new BrowserExtensionInstallResult(extensionId, extensionDirectory, manifestPath);
+        return new BrowserExtensionInstallResult(
+            extensionId,
+            chromiumExtensionDirectory,
+            FirefoxExtensionId,
+            firefoxExtensionManifestPath,
+            chromiumManifestPath,
+            firefoxManifestPath,
+            registryKeys);
     }
 
     public static string FindExtensionDirectory()
+    {
+        return FindChromiumExtensionDirectory();
+    }
+
+    public static IReadOnlyList<string> FindExtensionDirectories()
+    {
+        return
+        [
+            FindChromiumExtensionDirectory(),
+            FindFirefoxExtensionDirectory()
+        ];
+    }
+
+    public static void OpenExtensionDirectories()
+    {
+        foreach (var directory in FindExtensionDirectories())
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = directory,
+                UseShellExecute = true
+            });
+        }
+    }
+
+    public static IReadOnlyList<string> OpenBrowserSetupPages()
+    {
+        var opened = new List<string>();
+        foreach (var target in BrowserTargets())
+        {
+            if (target.Executable is null)
+            {
+                continue;
+            }
+
+            var info = new ProcessStartInfo
+            {
+                FileName = target.Executable,
+                UseShellExecute = false
+            };
+            info.ArgumentList.Add(target.Url);
+            Process.Start(info);
+            opened.Add(target.Name);
+        }
+
+        return opened;
+    }
+
+    private static string FindChromiumExtensionDirectory()
     {
         var candidates = CandidateRoots()
             .SelectMany(root => new[]
@@ -2588,6 +2676,22 @@ static class BrowserExtensionInstaller
 
         return candidates.FirstOrDefault()
             ?? throw new DirectoryNotFoundException("The browser-extension/chrome-extension folder was not found. Build or publish EchoScribe first.");
+    }
+
+    private static string FindFirefoxExtensionDirectory()
+    {
+        var candidates = CandidateRoots()
+            .SelectMany(root => new[]
+            {
+                Path.Combine(root, "firefox-extension"),
+                Path.Combine(root, "publish", "firefox-extension")
+            })
+            .Where(path => File.Exists(Path.Combine(path, "manifest.json")))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return candidates.FirstOrDefault()
+            ?? throw new DirectoryNotFoundException("The firefox-extension folder was not found. Build or publish EchoScribe first.");
     }
 
     private static string FindNativeHostPath()
@@ -2608,6 +2712,20 @@ static class BrowserExtensionInstaller
 
         return candidates.FirstOrDefault()
             ?? throw new FileNotFoundException("EchoScribe.NativeHost.exe was not found. Build or publish the native host first.");
+    }
+
+    private static void WriteNativeHostManifest(string path, Dictionary<string, object> payload)
+    {
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(path, json + Environment.NewLine, Utf8NoBom);
+    }
+
+    private static string RegisterNativeMessagingHost(string registryPath, string manifestPath)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(registryPath, writable: true)
+            ?? throw new InvalidOperationException($"Native Messaging registry key could not be created: HKCU\\{registryPath}");
+        key.SetValue("", manifestPath, RegistryValueKind.String);
+        return $@"HKCU\{registryPath}";
     }
 
     private static IEnumerable<string> CandidateRoots()
@@ -2648,5 +2766,48 @@ static class BrowserExtensionInstaller
 
         return id.ToString();
     }
+
+    private static IReadOnlyList<BrowserTarget> BrowserTargets()
+    {
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+        return
+        [
+            new BrowserTarget("Google Chrome", "chrome://extensions", FirstExistingFile(
+                CombineIfRoot(programFiles, @"Google\Chrome\Application\chrome.exe"),
+                CombineIfRoot(programFilesX86, @"Google\Chrome\Application\chrome.exe"),
+                CombineIfRoot(localAppData, @"Google\Chrome\Application\chrome.exe"))),
+            new BrowserTarget("Microsoft Edge", "edge://extensions", FirstExistingFile(
+                CombineIfRoot(programFiles, @"Microsoft\Edge\Application\msedge.exe"),
+                CombineIfRoot(programFilesX86, @"Microsoft\Edge\Application\msedge.exe"),
+                CombineIfRoot(localAppData, @"Microsoft\Edge\Application\msedge.exe"))),
+            new BrowserTarget("Brave", "brave://extensions", FirstExistingFile(
+                CombineIfRoot(programFiles, @"BraveSoftware\Brave-Browser\Application\brave.exe"),
+                CombineIfRoot(programFilesX86, @"BraveSoftware\Brave-Browser\Application\brave.exe"),
+                CombineIfRoot(localAppData, @"BraveSoftware\Brave-Browser\Application\brave.exe"))),
+            new BrowserTarget("Chromium", "chrome://extensions", FirstExistingFile(
+                CombineIfRoot(programFiles, @"Chromium\Application\chrome.exe"),
+                CombineIfRoot(programFilesX86, @"Chromium\Application\chrome.exe"),
+                CombineIfRoot(localAppData, @"Chromium\Application\chrome.exe"))),
+            new BrowserTarget("Firefox", "about:debugging#/runtime/this-firefox", FirstExistingFile(
+                CombineIfRoot(programFiles, @"Mozilla Firefox\firefox.exe"),
+                CombineIfRoot(programFilesX86, @"Mozilla Firefox\firefox.exe"),
+                CombineIfRoot(localAppData, @"Mozilla Firefox\firefox.exe")))
+        ];
+    }
+
+    private static string? FirstExistingFile(params string[] paths)
+    {
+        return paths.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
+    }
+
+    private static string CombineIfRoot(string root, string relative)
+    {
+        return string.IsNullOrWhiteSpace(root) ? "" : Path.Combine(root, relative);
+    }
+
+    private sealed record BrowserTarget(string Name, string Url, string? Executable);
 }
 

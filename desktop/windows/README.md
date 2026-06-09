@@ -11,26 +11,26 @@ Default transcription behavior:
 
 Browser summary flow:
 
-- The Chrome extension reads the current page or selected text.
-- Chrome sends the content to `EchoScribe.NativeHost.exe` through Native Messaging.
+- A Chromium-based or Firefox extension reads the current page or selected text.
+- The browser sends the content to `EchoScribe.NativeHost.exe` through Native Messaging.
 - The native host calls the configured provider and returns the summary.
 - API keys stay local in `appsettings.json`; they are not stored in the extension.
-- `EchoScribe.NativeHost.exe` is not a service and does not run at Windows startup. Chrome starts it only when the extension sends a Native Messaging request.
+- `EchoScribe.NativeHost.exe` is not a service and does not run at Windows startup. The browser starts it only when the extension sends a Native Messaging request.
 
 Native Messaging flow:
 
-1. The extension calls `chrome.runtime.sendNativeMessage("de.echoscribe.nativehost", payload)`.
-2. Chrome reads `HKCU\Software\Google\Chrome\NativeMessagingHosts\de.echoscribe.nativehost` or the matching registry key for another Chromium browser.
-3. That registry value points to `native-host\de.echoscribe.nativehost.json`.
+1. The extension calls `runtime.sendNativeMessage("de.echoscribe.nativehost", payload)`.
+2. Chromium-based browsers read their `NativeMessagingHosts\de.echoscribe.nativehost` registry key; Firefox reads `HKCU\Software\Mozilla\NativeMessagingHosts\de.echoscribe.nativehost`.
+3. Chromium-based browsers point to `native-host\de.echoscribe.nativehost.json`; Firefox points to `native-host\de.echoscribe.nativehost.firefox.json`.
 4. The manifest points to `native-host\EchoScribe.NativeHost.exe`.
-5. Chrome starts the EXE for the request and communicates with it through stdin/stdout.
+5. The browser starts the EXE for the request and communicates with it through stdin/stdout.
 
 Configuration lives in `appsettings.json` next to the executable. The project can also import provider keys from `*.env` files in the project root.
 
 The settings dialog is split into three tabs:
 
 - `Audio`: STT provider/model, language, and hotkey.
-- `Web Summary`: Chrome summary provider/model, URL extraction, and the URL summary prompt.
+- `Web Summary`: browser summary provider/model, URL extraction, and the URL summary prompt.
 - `API-Keys`: all provider keys in one place, so STT can use ElevenLabs while summaries use Claude, OpenAI, Gemini, or xAI.
 
 Speech-to-text providers:
@@ -55,11 +55,11 @@ Install:
 2. Double-click `install.cmd`.
 3. Keep the default install folder or choose another one in the setup TUI.
 4. If setup asks to build EchoScribe, accept the build. The local .NET SDK is installed automatically when needed.
-5. In `chrome://extensions`, enable developer mode and load the installed `chrome-extension` folder shown by setup.
+5. For Chrome, Edge, Brave, or Chromium, enable developer mode on the browser's extensions page and load the installed `chrome-extension` folder shown by setup. For Firefox, use `about:debugging#/runtime/this-firefox` and load the installed `firefox-extension\manifest.json` as a temporary add-on.
 
-The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging host, open the Chrome extension setup page, and start EchoScribe after installation.
+The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging hosts, open browser extension setup pages, and start EchoScribe after installation.
 
-The installer and `scripts\register-chrome-host.ps1` do not install the Chrome extension automatically. They only register the Native Messaging host so the manually loaded extension is allowed to start the local bridge executable.
+The installer and the compatibility-named `scripts\register-chrome-host.ps1` helper do not install browser extensions automatically. They only register the Native Messaging hosts so manually loaded extensions are allowed to start the local bridge executable.
 
 From a source checkout, `install.cmd` is still the only required entry point. If `publish\EchoScribe.exe` does not exist yet, setup offers to build it automatically before installing. If a build already exists, setup offers an optional rebuild.
 
@@ -75,23 +75,22 @@ This creates:
 - `publish\EchoScribe.exe`
 - `publish\native-host\EchoScribe.NativeHost.exe`
 - `publish\chrome-extension\`
+- `publish\firefox-extension\`
 - `publish\install.cmd`
 - `publish\scripts\install-echoscribe.ps1`
 - `EchoScribe-Windows-x64.zip`
 
 Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
 
-Register the Chrome Native Messaging host manually:
+Register the browser Native Messaging host manually:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-chrome-host.ps1
 ```
 
-For normal installs, prefer `install.cmd` from the published package because it also sets Startup and registers additional Chromium-based browsers.
+For normal installs, prefer `install.cmd` from the published package because it also sets Startup and registers Chromium-based browsers plus Firefox.
 
-After manual registration, load the extension yourself:
+After manual registration, load the extension paths printed by the script:
 
-1. Open `chrome://extensions`.
-2. Enable developer mode.
-3. Click `Load unpacked`.
-4. Select the installed `chrome-extension` folder, for example `%LOCALAPPDATA%\EchoScribe\chrome-extension`.
+1. Chrome, Edge, Brave, or Chromium: open the browser extensions page, enable developer mode, click `Load unpacked`, and select the printed `chrome-extension` folder.
+2. Firefox: open `about:debugging#/runtime/this-firefox`, click `Load Temporary Add-on`, and select the printed `firefox-extension\manifest.json`.

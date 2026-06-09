@@ -18,15 +18,36 @@ $packageRoot = if ((Split-Path -Leaf $scriptRoot) -eq 'scripts') {
     $scriptRoot
 }
 $nativeHostName = 'de.echoscribe.nativehost'
+$firefoxExtensionId = 'echoscribe@wean.de'
 $defaultTargetDirectory = Join-Path $env:LOCALAPPDATA 'EchoScribe'
+
+function Write-ColorLine {
+    param(
+        [string]$Text = '',
+        [ConsoleColor]$Color = [ConsoleColor]::Gray
+    )
+
+    if ($Text.Length -eq 0) {
+        Write-Host ''
+        return
+    }
+
+    Write-Host $Text -ForegroundColor $Color
+}
 
 function Write-Header {
     if (-not $NonInteractive) {
         Clear-Host
     }
+    try {
+        $host.UI.RawUI.WindowTitle = 'EchoScribe Setup'
+    } catch {
+        # Some hosts do not expose a writable console title.
+    }
     Write-Host ''
-    Write-Host 'EchoScribe Windows Setup'
-    Write-Host '========================'
+    Write-ColorLine 'EchoScribe Windows Setup' Cyan
+    Write-ColorLine '========================' DarkCyan
+    Write-ColorLine 'App, autostart, browser extensions, and Native Messaging in one installer.' DarkGray
     Write-Host ''
 }
 
@@ -38,8 +59,14 @@ function Write-Step {
     )
 
     $percent = [Math]::Min(100, [Math]::Round(($Step / [double]$Total) * 100))
+    $barWidth = 28
+    $filled = [Math]::Min($barWidth, [Math]::Round(($percent / 100.0) * $barWidth))
+    $bar = ('#' * $filled).PadRight($barWidth, '-')
     Write-Progress -Activity 'Installing EchoScribe' -Status $Status -PercentComplete $percent
-    Write-Host ("[{0}/{1}] {2}" -f $Step, $Total, $Status)
+    Write-Host '[' -NoNewline -ForegroundColor DarkGray
+    Write-Host $bar -NoNewline -ForegroundColor Cyan
+    Write-Host ("] {0,3}% " -f $percent) -NoNewline -ForegroundColor DarkGray
+    Write-Host ("[{0}/{1}] {2}" -f $Step, $Total, $Status) -ForegroundColor Green
 }
 
 function Read-SetupPath {
@@ -49,8 +76,8 @@ function Read-SetupPath {
         return $DefaultValue
     }
 
-    Write-Host "Install folder:"
-    Write-Host "  $DefaultValue"
+    Write-ColorLine 'Install folder:' Yellow
+    Write-ColorLine "  $DefaultValue" DarkGray
     $value = Read-Host 'Press Enter to use this folder or type another path'
     if ([string]::IsNullOrWhiteSpace($value)) {
         return $DefaultValue
@@ -78,7 +105,7 @@ function Read-SetupYesNo {
         switch ($value.Trim().ToLowerInvariant()) {
             { $_ -in @('y', 'yes') } { return $true }
             { $_ -in @('n', 'no') } { return $false }
-            default { Write-Host 'Please answer y or n.' }
+            default { Write-ColorLine 'Please answer y or n.' Yellow }
         }
     }
 }
@@ -138,7 +165,7 @@ function Invoke-CheckedScript {
 
 function Build-Package {
     Write-Host ''
-    Write-Host 'Building EchoScribe Windows package...'
+    Write-ColorLine 'Building EchoScribe Windows package...' Cyan
     Invoke-CheckedScript -Path (Join-Path $scriptRoot 'install-dotnet-sdk.ps1')
     Invoke-CheckedScript -Path (Join-Path $scriptRoot 'publish-echoscribe.ps1')
 }
@@ -270,7 +297,7 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText($Path, $Value, $encoding)
 }
 
-function Register-NativeHost {
+function Register-ChromiumNativeHost {
     param(
         [Parameter(Mandatory = $true)][string]$NativeHostExe,
         [Parameter(Mandatory = $true)][string]$ExtensionManifestPath
@@ -313,6 +340,34 @@ function Register-NativeHost {
     }
 }
 
+function Register-FirefoxNativeHost {
+    param([Parameter(Mandatory = $true)][string]$NativeHostExe)
+
+    $nativeHostManifestPath = Join-Path (Split-Path -Parent $NativeHostExe) "$nativeHostName.firefox.json"
+    $hostManifest = [ordered]@{
+        name = $nativeHostName
+        description = 'EchoScribe Web Summary Native Host'
+        path = $NativeHostExe
+        type = 'stdio'
+        allowed_extensions = @($firefoxExtensionId)
+    }
+    Write-Utf8NoBom -Path $nativeHostManifestPath -Value (($hostManifest | ConvertTo-Json -Depth 4) + [Environment]::NewLine)
+
+    $registryPath = "Software\Mozilla\NativeMessagingHosts\$nativeHostName"
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey($registryPath, $true)
+    if (-not $key) {
+        throw "Registry key could not be created: HKCU:\$registryPath"
+    }
+    $key.SetValue('', $nativeHostManifestPath, [Microsoft.Win32.RegistryValueKind]::String)
+    $key.Dispose()
+
+    return [pscustomobject]@{
+        ExtensionId = $firefoxExtensionId
+        NativeHostManifest = $nativeHostManifestPath
+        NativeHostRegistry = "HKCU:\$registryPath"
+    }
+}
+
 function New-Shortcut {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -336,6 +391,96 @@ function Remove-Shortcut {
     }
 }
 
+function First-ExistingFile {
+    param([Parameter(Mandatory = $true)][string[]]$Paths)
+
+    foreach ($path in $Paths) {
+        if ($path -and (Test-Path -LiteralPath $path -PathType Leaf)) {
+            return $path
+        }
+    }
+    return $null
+}
+
+function Browser-Target {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string[]]$Paths,
+        [Parameter(Mandatory = $true)][string]$ExtensionPath
+    )
+
+    [pscustomobject]@{
+        Name = $Name
+        Url = $Url
+        Executable = First-ExistingFile -Paths $Paths
+        ExtensionPath = $ExtensionPath
+    }
+}
+
+function Get-BrowserSetupTargets {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChromiumExtensionDirectory,
+        [Parameter(Mandatory = $true)][string]$FirefoxExtensionDirectory
+    )
+
+    $programFilesX86 = ${env:ProgramFiles(x86)}
+    return @(
+        Browser-Target -Name 'Google Chrome' -Url 'chrome://extensions' -ExtensionPath $ChromiumExtensionDirectory -Paths @(
+            (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
+            $(if ($programFilesX86) { Join-Path $programFilesX86 'Google\Chrome\Application\chrome.exe' }),
+            (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+        ),
+        Browser-Target -Name 'Microsoft Edge' -Url 'edge://extensions' -ExtensionPath $ChromiumExtensionDirectory -Paths @(
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe'),
+            $(if ($programFilesX86) { Join-Path $programFilesX86 'Microsoft\Edge\Application\msedge.exe' }),
+            (Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\Application\msedge.exe')
+        ),
+        Browser-Target -Name 'Brave' -Url 'brave://extensions' -ExtensionPath $ChromiumExtensionDirectory -Paths @(
+            (Join-Path $env:ProgramFiles 'BraveSoftware\Brave-Browser\Application\brave.exe'),
+            $(if ($programFilesX86) { Join-Path $programFilesX86 'BraveSoftware\Brave-Browser\Application\brave.exe' }),
+            (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\Application\brave.exe')
+        ),
+        Browser-Target -Name 'Chromium' -Url 'chrome://extensions' -ExtensionPath $ChromiumExtensionDirectory -Paths @(
+            (Join-Path $env:ProgramFiles 'Chromium\Application\chrome.exe'),
+            $(if ($programFilesX86) { Join-Path $programFilesX86 'Chromium\Application\chrome.exe' }),
+            (Join-Path $env:LOCALAPPDATA 'Chromium\Application\chrome.exe')
+        ),
+        Browser-Target -Name 'Firefox' -Url 'about:debugging#/runtime/this-firefox' -ExtensionPath $FirefoxExtensionDirectory -Paths @(
+            (Join-Path $env:ProgramFiles 'Mozilla Firefox\firefox.exe'),
+            $(if ($programFilesX86) { Join-Path $programFilesX86 'Mozilla Firefox\firefox.exe' }),
+            (Join-Path $env:LOCALAPPDATA 'Mozilla Firefox\firefox.exe')
+        )
+    )
+}
+
+function Open-BrowserSetup {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChromiumExtensionDirectory,
+        [Parameter(Mandatory = $true)][string]$FirefoxExtensionDirectory
+    )
+
+    Start-Process $ChromiumExtensionDirectory
+    if (Test-Path -LiteralPath $FirefoxExtensionDirectory -PathType Container) {
+        Start-Process $FirefoxExtensionDirectory
+    }
+
+    $targets = Get-BrowserSetupTargets -ChromiumExtensionDirectory $ChromiumExtensionDirectory -FirefoxExtensionDirectory $FirefoxExtensionDirectory
+    $opened = @()
+    foreach ($target in $targets) {
+        if ($target.Executable) {
+            Start-Process -FilePath $target.Executable -ArgumentList $target.Url
+            $opened += $target.Name
+        }
+    }
+
+    if ($opened.Count -eq 0) {
+        Write-ColorLine 'No supported browser executable was found for opening the extension page automatically.' Yellow
+    } else {
+        Write-ColorLine "Opened extension setup page for: $($opened -join ', ')" Cyan
+    }
+}
+
 $targetDir = Resolve-FullPath ($(if ($TargetDirectory) { $TargetDirectory } else { $defaultTargetDirectory }))
 $enableAutostart = -not $NoAutostart
 $enableBrowserExtension = -not $NoBrowserExtension
@@ -351,6 +496,8 @@ Assert-File (Join-Path $publishDir 'EchoScribe.exe')
 Assert-File (Join-Path $publishDir 'native-host\EchoScribe.NativeHost.exe')
 Assert-Directory (Join-Path $publishDir 'chrome-extension')
 Assert-File (Join-Path $publishDir 'chrome-extension\manifest.json')
+Assert-Directory (Join-Path $publishDir 'firefox-extension')
+Assert-File (Join-Path $publishDir 'firefox-extension\manifest.json')
 
 $targetDir = Resolve-FullPath (Read-SetupPath -DefaultValue $targetDir)
 $enableAutostart = Read-SetupYesNo -Prompt 'Start EchoScribe automatically when Windows starts?' -DefaultValue $enableAutostart
@@ -364,16 +511,16 @@ $startAfterInstall = Read-SetupYesNo -Prompt 'Start EchoScribe after setup?' -De
 
 if (-not $NonInteractive) {
     Write-Host ''
-    Write-Host 'Setup summary'
-    Write-Host "  Source:            $publishDir"
-    Write-Host "  Install folder:    $targetDir"
-    Write-Host "  Autostart:         $enableAutostart"
-    Write-Host "  Browser extension: $enableBrowserExtension"
-    Write-Host "  Start after setup: $startAfterInstall"
+    Write-ColorLine 'Setup summary' Cyan
+    Write-ColorLine "  Source:            $publishDir" DarkGray
+    Write-ColorLine "  Install folder:    $targetDir" DarkGray
+    Write-ColorLine "  Autostart:         $enableAutostart" DarkGray
+    Write-ColorLine "  Browser extension: $enableBrowserExtension" DarkGray
+    Write-ColorLine "  Start after setup: $startAfterInstall" DarkGray
     Write-Host ''
     $continue = Read-Host 'Press Enter to install or type q to cancel'
     if ($continue.Trim().ToLowerInvariant() -eq 'q') {
-        Write-Host 'Setup canceled.'
+        Write-ColorLine 'Setup canceled.' Yellow
         exit 0
     }
 }
@@ -386,19 +533,27 @@ Copy-PackageToTarget -Source $publishDir -Target $targetDir
 
 $appExe = Join-Path $targetDir 'EchoScribe.exe'
 $nativeHostExe = Join-Path $targetDir 'native-host\EchoScribe.NativeHost.exe'
-$extensionDir = Join-Path $targetDir 'chrome-extension'
-$manifestPath = Join-Path $extensionDir 'manifest.json'
+$chromiumExtensionDir = Join-Path $targetDir 'chrome-extension'
+$firefoxExtensionDir = Join-Path $targetDir 'firefox-extension'
+$chromiumManifestPath = Join-Path $chromiumExtensionDir 'manifest.json'
 Assert-File $appExe
 Assert-File $nativeHostExe
-Assert-Directory $extensionDir
-Assert-File $manifestPath
+Assert-Directory $chromiumExtensionDir
+Assert-File $chromiumManifestPath
+Assert-Directory $firefoxExtensionDir
+Assert-File (Join-Path $firefoxExtensionDir 'manifest.json')
 
-Write-Step 5 8 'Registering browser native host'
+Write-Step 5 8 'Registering browser native hosts'
 $browserRegistration = $null
 if ($enableBrowserExtension) {
-    $browserRegistration = Register-NativeHost -NativeHostExe $nativeHostExe -ExtensionManifestPath $manifestPath
+    $chromiumRegistration = Register-ChromiumNativeHost -NativeHostExe $nativeHostExe -ExtensionManifestPath $chromiumManifestPath
+    $firefoxRegistration = Register-FirefoxNativeHost -NativeHostExe $nativeHostExe
+    $browserRegistration = [pscustomobject]@{
+        Chromium = $chromiumRegistration
+        Firefox = $firefoxRegistration
+    }
 } else {
-    Write-Host 'Browser native host registration skipped.'
+    Write-ColorLine 'Browser native host registration skipped.' Yellow
 }
 
 Write-Step 6 8 'Creating shortcuts'
@@ -416,8 +571,7 @@ if ($enableAutostart) {
 
 Write-Step 7 8 'Opening optional setup pages'
 if ($openBrowserSetup) {
-    Start-Process $extensionDir
-    Start-Process 'chrome://extensions' -ErrorAction SilentlyContinue
+    Open-BrowserSetup -ChromiumExtensionDirectory $chromiumExtensionDir -FirefoxExtensionDirectory $firefoxExtensionDir
 }
 if ($startAfterInstall) {
     Start-Process -FilePath $appExe -WorkingDirectory $targetDir
@@ -433,19 +587,26 @@ $result = [ordered]@{
     StartupShortcut = $startupShortcut
     StartMenuShortcut = $startMenuShortcut
     BrowserExtension = $enableBrowserExtension
-    ExtensionDirectory = $extensionDir
+    ChromiumExtensionDirectory = $chromiumExtensionDir
+    FirefoxExtensionDirectory = $firefoxExtensionDir
 }
 if ($browserRegistration) {
-    $result.ExtensionId = $browserRegistration.ExtensionId
-    $result.NativeHostManifest = $browserRegistration.NativeHostManifest
-    $result.NativeHostRegistry = $browserRegistration.NativeHostRegistry
+    $result.ChromiumExtensionId = $browserRegistration.Chromium.ExtensionId
+    $result.ChromiumNativeHostManifest = $browserRegistration.Chromium.NativeHostManifest
+    $result.ChromiumNativeHostRegistry = $browserRegistration.Chromium.NativeHostRegistry
+    $result.FirefoxExtensionId = $browserRegistration.Firefox.ExtensionId
+    $result.FirefoxNativeHostManifest = $browserRegistration.Firefox.NativeHostManifest
+    $result.FirefoxNativeHostRegistry = $browserRegistration.Firefox.NativeHostRegistry
 }
 
 [pscustomobject]$result
 
 Write-Host ''
 if ($enableBrowserExtension) {
-    Write-Host 'Next step: in chrome://extensions, enable developer mode and load this folder:'
-    Write-Host "  $extensionDir"
+    Write-ColorLine 'Next steps:' Cyan
+    Write-ColorLine '  Chromium browsers: enable developer mode on the extensions page and load this folder:' Gray
+    Write-ColorLine "    $chromiumExtensionDir" DarkGray
+    Write-ColorLine '  Firefox: open about:debugging#/runtime/this-firefox and load this manifest as a temporary add-on:' Gray
+    Write-ColorLine "    $(Join-Path $firefoxExtensionDir 'manifest.json')" DarkGray
 }
-Write-Host 'EchoScribe setup finished.'
+Write-ColorLine 'EchoScribe setup finished.' Green

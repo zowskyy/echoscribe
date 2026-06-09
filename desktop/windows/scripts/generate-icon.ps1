@@ -13,7 +13,9 @@ $out = Join-Path $root 'app.ico'
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
 $pngs = New-Object System.Collections.Generic.List[object]
 $browserIconDir = Join-Path (Split-Path -Parent $root) 'browser-extension\icons'
+$firefoxIconDir = Join-Path (Split-Path -Parent $root) 'firefox-extension\icons'
 New-Item -ItemType Directory -Force -Path $browserIconDir | Out-Null
+New-Item -ItemType Directory -Force -Path $firefoxIconDir | Out-Null
 
 if (-not (Test-Path -LiteralPath $source)) {
     throw "EchoScribe logo not found: $source"
@@ -43,6 +45,7 @@ try {
 
         if ($size -in @(16, 32, 48, 128)) {
             [System.IO.File]::WriteAllBytes((Join-Path $browserIconDir "icon-$size.png"), $bytes)
+            [System.IO.File]::WriteAllBytes((Join-Path $firefoxIconDir "icon-$size.png"), $bytes)
         }
 
         $graphics.Dispose()
@@ -83,3 +86,4 @@ $fs.Dispose()
 
 Write-Host "Wrote $out"
 Write-Host "Wrote browser icons to $browserIconDir"
+Write-Host "Wrote Firefox icons to $firefoxIconDir"

@@ -44,8 +44,10 @@ function Assert-File {
 $publishDir = Join-Path $root 'publish'
 $nativePublishDir = Join-Path $publishDir 'native-host'
 $extensionPublishDir = Join-Path $publishDir 'chrome-extension'
+$firefoxExtensionPublishDir = Join-Path $publishDir 'firefox-extension'
 $publishScriptsDir = Join-Path $publishDir 'scripts'
 $extensionSourceDir = Join-Path (Split-Path -Parent $root) 'browser-extension'
+$firefoxExtensionSourceDir = Join-Path (Split-Path -Parent $root) 'firefox-extension'
 $packagePath = Join-Path $root 'EchoScribe-Windows-x64.zip'
 
 if (Test-Path -LiteralPath $publishDir) {
@@ -91,6 +93,10 @@ if (Test-Path -LiteralPath $extensionPublishDir) {
     Remove-Item -LiteralPath $extensionPublishDir -Recurse -Force
 }
 Copy-Item -LiteralPath $extensionSourceDir -Destination $extensionPublishDir -Recurse
+if (Test-Path -LiteralPath $firefoxExtensionPublishDir) {
+    Remove-Item -LiteralPath $firefoxExtensionPublishDir -Recurse -Force
+}
+Copy-Item -LiteralPath $firefoxExtensionSourceDir -Destination $firefoxExtensionPublishDir -Recurse
 
 $appsettingsTemplate = Join-Path $root 'appsettings.template.json'
 $appsettingsSource = $appsettingsTemplate
