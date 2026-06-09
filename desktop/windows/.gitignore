@@ -1,0 +1,7 @@
+bin/
+obj/
+publish/
+.dotnet-sdk/
+*.zip
+*.env
+appsettings.json

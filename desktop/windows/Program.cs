@@ -1,0 +1,2652 @@
+﻿using System.Diagnostics;
+using System.Drawing.Drawing2D;
+using System.Globalization;
+using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Microsoft.Win32;
+using NAudio.Wave;
+
+namespace EchoScribe;
+
+static class Program
+{
+    [STAThread]
+    static void Main()
+    {
+        using var instanceMutex = new Mutex(true, @"Local\EchoScribe.SingleInstance", out var isFirstInstance);
+        if (!isFirstInstance)
+        {
+            MessageBox.Show("EchoScribe läuft bereits.", "EchoScribe", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        ApplicationConfiguration.Initialize();
+        Application.Run(new TrayAppContext(AppConfig.Load()));
+    }
+}
+
+sealed class TrayAppContext : ApplicationContext
+{
+    private AppConfig config;
+    private readonly FloatingStatusForm statusForm;
+    private readonly NotifyIcon trayIcon;
+    private HotkeyWindow hotkeyWindow;
+    private KeyboardHook keyboardHook;
+    private readonly System.Windows.Forms.Timer holdTimer;
+    private readonly AudioRecorder recorder = new();
+    private readonly TranscriptionClient transcriptionClient;
+    private readonly BillingClient billingClient;
+    private IntPtr previousForegroundWindow = IntPtr.Zero;
+    private bool isRecording;
+    private bool isTranscribing;
+
+    public TrayAppContext(AppConfig config)
+    {
+        this.config = config;
+        transcriptionClient = new TranscriptionClient(config);
+        billingClient = new BillingClient(config);
+        statusForm = new FloatingStatusForm();
+        hotkeyWindow = new HotkeyWindow(config.Hotkey, BeginRecording);
+        keyboardHook = new KeyboardHook(config.Hotkey, BeginRecording, EndRecording);
+
+        trayIcon = new NotifyIcon
+        {
+            Icon = IconFactory.LoadAppIcon(),
+            Text = "EchoScribe",
+            Visible = true,
+            ContextMenuStrip = BuildTrayMenu()
+        };
+        trayIcon.DoubleClick += (_, _) => ShowStartupMessage();
+
+        holdTimer = new System.Windows.Forms.Timer { Interval = 40 };
+        holdTimer.Tick += (_, _) =>
+        {
+            if (isRecording && !config.Hotkey.IsCurrentlyDown())
+            {
+                EndRecording();
+            }
+        };
+
+        if (!hotkeyWindow.Register())
+        {
+            ShowTransient($"Hotkey belegt: {config.Hotkey.Display}", StatusKind.Error, 5000);
+        }
+        else
+        {
+            keyboardHook.Start();
+            ShowStartupMessage();
+        }
+    }
+
+    private ContextMenuStrip BuildTrayMenu()
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add($"Hotkey: {config.Hotkey.Display}", null, (_, _) => ShowStartupMessage());
+        menu.Items.Add($"STT: {config.Provider} / {config.Model}", null, (_, _) => ShowStartupMessage());
+        menu.Items.Add($"Summary: {config.SummaryProvider} / {config.SummaryModelFor(config.SummaryProvider)}", null, (_, _) => ShowStartupMessage());
+        var providerMenu = new ToolStripMenuItem("STT-Provider");
+        foreach (var provider in AppConfig.SupportedProviders)
+        {
+            var item = new ToolStripMenuItem(provider)
+            {
+                Checked = provider.Equals(config.Provider, StringComparison.OrdinalIgnoreCase)
+            };
+            item.Click += (_, _) => SwitchProvider(provider);
+            providerMenu.DropDownItems.Add(item);
+        }
+
+        menu.Items.Add(providerMenu);
+        var summaryProviderMenu = new ToolStripMenuItem("Summary-Provider");
+        foreach (var provider in AppConfig.SupportedSummaryProviders)
+        {
+            var item = new ToolStripMenuItem(provider)
+            {
+                Checked = provider.Equals(config.SummaryProvider, StringComparison.OrdinalIgnoreCase)
+            };
+            item.Click += (_, _) => SwitchSummaryProvider(provider);
+            summaryProviderMenu.DropDownItems.Add(item);
+        }
+
+        menu.Items.Add(summaryProviderMenu);
+        var billingMenu = new ToolStripMenuItem("Guthaben / Nutzung");
+        billingMenu.DropDownItems.Add("Aktuellen Provider prüfen", null, async (_, _) => await ShowBillingInfoAsync());
+        billingMenu.DropDownItems.Add(new ToolStripSeparator());
+        billingMenu.DropDownItems.Add("OpenAI Usage öffnen", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/usage"));
+        billingMenu.DropDownItems.Add("OpenAI Billing Overview öffnen", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/billing/overview"));
+        billingMenu.DropDownItems.Add("ElevenLabs Subscription öffnen", null, (_, _) => OpenUrl("https://elevenlabs.io/app/subscription"));
+        billingMenu.DropDownItems.Add("Gemini Usage & Billing öffnen", null, (_, _) => OpenUrl("https://aistudio.google.com/usage"));
+        billingMenu.DropDownItems.Add("xAI Billing öffnen", null, (_, _) => OpenUrl("https://console.x.ai/team/default/billing"));
+        menu.Items.Add(billingMenu);
+        var browserMenu = new ToolStripMenuItem("Browser-Erweiterung");
+        browserMenu.DropDownItems.Add("Chrome Plugin installieren / registrieren", null, (_, _) => InstallBrowserExtension());
+        browserMenu.DropDownItems.Add("Extension-Ordner öffnen", null, (_, _) => OpenBrowserExtensionFolder());
+        browserMenu.DropDownItems.Add("chrome://extensions öffnen", null, (_, _) => OpenUrl("chrome://extensions"));
+        menu.Items.Add(browserMenu);
+        menu.Items.Add("Einstellungen...", null, (_, _) => OpenSettings());
+        menu.Items.Add("Config öffnen", null, (_, _) => Process.Start(new ProcessStartInfo
+        {
+            FileName = AppConfig.ConfigPath,
+            UseShellExecute = true
+        }));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Beenden", null, (_, _) => ExitThread());
+        return menu;
+    }
+
+    private void InstallBrowserExtension()
+    {
+        try
+        {
+            var result = BrowserExtensionInstaller.Register();
+            MessageBox.Show(
+                $"Native Host registriert.\n\nExtension-ID:\n{result.ExtensionId}\n\nExtension-Ordner:\n{result.ExtensionDirectory}\n\nChrome öffnet jetzt chrome://extensions. Dort Entwicklermodus aktivieren und diesen Ordner per \"Entpackte Erweiterung laden\" auswählen.",
+                "EchoScribe Browser-Erweiterung",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            OpenUrl("chrome://extensions");
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = result.ExtensionDirectory,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                ex.Message,
+                "Browser-Erweiterung konnte nicht registriert werden",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
+    }
+
+    private static void OpenBrowserExtensionFolder()
+    {
+        var path = BrowserExtensionInstaller.FindExtensionDirectory();
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = path,
+            UseShellExecute = true
+        });
+    }
+
+    private void SwitchProvider(string provider)
+    {
+        var current = AppConfig.Load();
+        if (provider.Equals(current.Provider, StringComparison.OrdinalIgnoreCase))
+        {
+            ShowStartupMessage();
+            return;
+        }
+
+        var apiKey = current.GetApiKeyForProvider(provider);
+        if (string.IsNullOrWhiteSpace(apiKey) && !AppConfig.HasEnvironmentApiKey(provider))
+        {
+            using var prompt = new ApiKeyPromptForm(provider);
+            if (prompt.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+
+            apiKey = prompt.ApiKey;
+        }
+
+        var nextConfig = current.WithProvider(provider, apiKey);
+        nextConfig.Save();
+        ApplyConfig(nextConfig);
+        ShowTransient($"STT-Provider gewechselt\n{provider}", StatusKind.Success, 2400);
+    }
+
+    private void SwitchSummaryProvider(string provider)
+    {
+        var current = AppConfig.Load();
+        if (provider.Equals(current.SummaryProvider, StringComparison.OrdinalIgnoreCase))
+        {
+            ShowStartupMessage();
+            return;
+        }
+
+        var apiKey = current.GetApiKeyForProvider(provider);
+        if (string.IsNullOrWhiteSpace(apiKey) && !AppConfig.HasEnvironmentApiKey(provider))
+        {
+            using var prompt = new ApiKeyPromptForm(provider);
+            if (prompt.ShowDialog() != DialogResult.OK)
+            {
+                return;
+            }
+
+            apiKey = prompt.ApiKey;
+        }
+
+        var nextConfig = current.WithSummaryProvider(provider, apiKey);
+        nextConfig.Save();
+        ApplyConfig(nextConfig);
+        ShowTransient($"Summary-Provider gewechselt\n{provider}", StatusKind.Success, 2400);
+    }
+
+    private void ShowStartupMessage()
+    {
+        config = AppConfig.Load();
+        ShowTransient($"EchoScribe bereit\nHotkey: {config.Hotkey.Display}\nSTT: {config.Provider}\nSummary: {config.SummaryProvider}", StatusKind.Ready, 4200);
+    }
+
+    private void OpenSettings()
+    {
+        hotkeyWindow.Dispose();
+        keyboardHook.Dispose();
+        using var form = new SettingsForm(AppConfig.Load());
+        if (form.ShowDialog() != DialogResult.OK)
+        {
+            ApplyConfig(config);
+            return;
+        }
+
+        ApplyConfig(form.Config);
+        ShowTransient("Einstellungen gespeichert", StatusKind.Success, 2200);
+    }
+
+    private void ApplyConfig(AppConfig nextConfig)
+    {
+        config = nextConfig;
+        transcriptionClient.UpdateConfig(nextConfig);
+        billingClient.UpdateConfig(nextConfig);
+        hotkeyWindow.Dispose();
+        keyboardHook.Dispose();
+        hotkeyWindow = new HotkeyWindow(config.Hotkey, BeginRecording);
+        keyboardHook = new KeyboardHook(config.Hotkey, BeginRecording, EndRecording);
+
+        if (!hotkeyWindow.Register())
+        {
+            ShowTransient($"Hotkey belegt: {config.Hotkey.Display}", StatusKind.Error, 5000);
+        }
+        else
+        {
+            keyboardHook.Start();
+        }
+
+        trayIcon.ContextMenuStrip = BuildTrayMenu();
+    }
+
+    private async Task ShowBillingInfoAsync()
+    {
+        config = AppConfig.Load();
+        billingClient.UpdateConfig(config);
+        ShowTransient("Guthaben wird geprüft", StatusKind.Transcribing, 1800);
+
+        try
+        {
+            var result = await billingClient.GetSummaryAsync();
+            if (result.OpenUrl is not null)
+            {
+                OpenUrl(result.OpenUrl);
+            }
+
+            MessageBox.Show(result.Message, "Guthaben / Nutzung", MessageBoxButtons.OK, result.IsError ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            if (ex is MissingOpenAiAdminKeyException or OpenAiUsagePermissionException)
+            {
+                using var dialog = new OpenAiAdminKeyHelpForm(ex.Message);
+                dialog.ShowDialog();
+                return;
+            }
+
+            MessageBox.Show($"[ECHOSCRIBE ERROR] {ex.Message}", "Guthaben / Nutzung", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static void OpenUrl(string url)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true
+        });
+    }
+
+    private void BeginRecording()
+    {
+        if (isRecording || isTranscribing)
+        {
+            return;
+        }
+
+        try
+        {
+            previousForegroundWindow = NativeMethods.GetForegroundWindow();
+            recorder.Start();
+            isRecording = true;
+            keyboardHook.MarkActive();
+            statusForm.ShowMessage("Recording", StatusKind.Recording);
+        }
+        catch (Exception ex)
+        {
+            PutTextIntoClipboardAndPaste($"[ECHOSCRIBE ERROR] Recording konnte nicht starten: {ex.Message}", paste: false);
+            ShowTransient("Recording-Fehler\nDetails in Zwischenablage", StatusKind.Error, 4500);
+        }
+    }
+
+    private async void EndRecording()
+    {
+        if (!isRecording)
+        {
+            return;
+        }
+
+        holdTimer.Stop();
+        isRecording = false;
+        keyboardHook.MarkInactive();
+        isTranscribing = true;
+        statusForm.ShowMessage("Transcription", StatusKind.Transcribing);
+
+        try
+        {
+            var wavPath = recorder.StopToTempWav();
+            if (new FileInfo(wavPath).Length < 1024)
+            {
+                throw new InvalidOperationException("Aufnahme war zu kurz oder leer.");
+            }
+
+            var text = await transcriptionClient.TranscribeAsync(wavPath);
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                text = "[ECHOSCRIBE ERROR] API hat keinen Text zurückgegeben.";
+            }
+
+            PutTextIntoClipboardAndPaste(text.Trim(), paste: true);
+            ShowTransient("Text eingefügt", 1600);
+            TryDelete(wavPath);
+        }
+        catch (Exception ex)
+        {
+            var errorText = $"[ECHOSCRIBE ERROR] {ex.Message}";
+            PutTextIntoClipboardAndPaste(errorText, paste: true);
+            ShowTransient("Fehler\nDetails in Zwischenablage", 4500);
+        }
+        finally
+        {
+            isTranscribing = false;
+        }
+    }
+
+    private void PutTextIntoClipboardAndPaste(string text, bool paste)
+    {
+        Clipboard.SetText(text);
+
+        if (!paste)
+        {
+            return;
+        }
+
+        config.Hotkey.WaitUntilReleased(1500);
+
+        if (previousForegroundWindow != IntPtr.Zero)
+        {
+            NativeMethods.SetForegroundWindow(previousForegroundWindow);
+            Thread.Sleep(180);
+        }
+
+        if (!NativeMethods.SendCtrlV())
+        {
+            AppLog.Write("SendInput paste failed; falling back to SendKeys.");
+            SendKeys.SendWait("^v");
+        }
+    }
+
+    private void ShowTransient(string message, int milliseconds)
+    {
+        var kind = message.StartsWith("Fehler", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Fehler", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("belegt", StringComparison.OrdinalIgnoreCase)
+                ? StatusKind.Error
+                : message.StartsWith("Text", StringComparison.OrdinalIgnoreCase) ||
+                    message.Contains("gespeichert", StringComparison.OrdinalIgnoreCase)
+                        ? StatusKind.Success
+                        : StatusKind.Ready;
+        ShowTransient(message, kind, milliseconds);
+    }
+
+    private void ShowTransient(string message, StatusKind kind, int milliseconds)
+    {
+        statusForm.ShowMessage(message, kind);
+        var timer = new System.Windows.Forms.Timer { Interval = milliseconds };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            if (!isRecording && !isTranscribing)
+            {
+                statusForm.Hide();
+            }
+        };
+        timer.Start();
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        {
+            // Temporary audio is best-effort cleanup.
+        }
+    }
+
+    protected override void ExitThreadCore()
+    {
+        holdTimer.Stop();
+        hotkeyWindow.Dispose();
+        keyboardHook.Dispose();
+        trayIcon.Visible = false;
+        trayIcon.Dispose();
+        statusForm.Close();
+        base.ExitThreadCore();
+    }
+}
+
+sealed class AudioRecorder
+{
+    private readonly object gate = new();
+    private WaveInEvent? waveIn;
+    private MemoryStream? audioStream;
+    private readonly WaveFormat format = new(16000, 16, 1);
+
+    public void Start()
+    {
+        lock (gate)
+        {
+            audioStream?.Dispose();
+            audioStream = new MemoryStream();
+            waveIn = new WaveInEvent
+            {
+                WaveFormat = format,
+                BufferMilliseconds = 50
+            };
+            waveIn.DataAvailable += (_, e) =>
+            {
+                lock (gate)
+                {
+                    audioStream?.Write(e.Buffer, 0, e.BytesRecorded);
+                }
+            };
+            waveIn.StartRecording();
+        }
+    }
+
+    public string StopToTempWav()
+    {
+        MemoryStream recorded;
+        lock (gate)
+        {
+            waveIn?.StopRecording();
+            waveIn?.Dispose();
+            waveIn = null;
+
+            recorded = audioStream ?? new MemoryStream();
+            audioStream = null;
+        }
+
+        recorded.Position = 0;
+        var path = Path.Combine(Path.GetTempPath(), $"ptt-{Guid.NewGuid():N}.wav");
+        using (recorded)
+        using (var writer = new WaveFileWriter(path, format))
+        {
+            recorded.CopyTo(writer);
+        }
+
+        return path;
+    }
+}
+
+sealed class TranscriptionClient(AppConfig config)
+{
+    private static readonly HttpClient Http = new();
+    private AppConfig config = config;
+
+    public void UpdateConfig(AppConfig nextConfig)
+    {
+        config = nextConfig;
+    }
+
+    public async Task<string> TranscribeAsync(string wavPath)
+    {
+        config = AppConfig.Load();
+        return config.Provider.ToLowerInvariant() switch
+        {
+            "openai" => await TranscribeOpenAiAsync(wavPath),
+            "elevenlabs" => await TranscribeElevenLabsAsync(wavPath),
+            "gemini" => await TranscribeGeminiAsync(wavPath),
+            "anthropic" => throw new InvalidOperationException("Claude/Anthropic ist für Web-Zusammenfassungen verfügbar, unterstützt in EchoScribe aber kein Speech-to-Text oder Text-to-Speech."),
+            "xai" => await TranscribeXaiAsync(wavPath),
+            _ => throw new InvalidOperationException($"Unbekannter Provider '{config.Provider}'.")
+        };
+    }
+
+    private async Task<string> TranscribeOpenAiAsync(string wavPath)
+    {
+        var apiKey = config.ResolveApiKey("OPENAI_API_KEY");
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(config.Model), "model");
+        form.Add(new StringContent(config.Language), "language");
+        form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue("audio/wav") }
+        }, "file", "recording.wav");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.openai.com/v1/audio/transcriptions");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        request.Content = form;
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureSuccess(response, body);
+        return JsonText(body, "text");
+    }
+
+    private async Task<string> TranscribeElevenLabsAsync(string wavPath)
+    {
+        var apiKey = config.ResolveApiKey("ELEVENLABS_API_KEY");
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(config.Model), "model_id");
+        form.Add(new StringContent(config.Language), "language_code");
+        form.Add(new StringContent("false"), "tag_audio_events");
+        form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue("audio/wav") }
+        }, "file", "recording.wav");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.elevenlabs.io/v1/speech-to-text");
+        request.Headers.Add("xi-api-key", apiKey);
+        request.Content = form;
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureSuccess(response, body);
+        return JsonText(body, "text");
+    }
+
+    private async Task<string> TranscribeGeminiAsync(string wavPath)
+    {
+        var apiKey = config.ResolveApiKey("GEMINI_API_KEY", "GOOGLE_API_KEY");
+        var bytes = await File.ReadAllBytesAsync(wavPath);
+        var startBody = JsonSerializer.Serialize(new
+        {
+            file = new { display_name = "ptt-recording.wav" }
+        });
+
+        using var start = new HttpRequestMessage(HttpMethod.Post, "https://generativelanguage.googleapis.com/upload/v1beta/files");
+        start.Headers.Add("x-goog-api-key", apiKey);
+        start.Headers.Add("X-Goog-Upload-Protocol", "resumable");
+        start.Headers.Add("X-Goog-Upload-Command", "start");
+        start.Headers.Add("X-Goog-Upload-Header-Content-Length", bytes.Length.ToString());
+        start.Headers.Add("X-Goog-Upload-Header-Content-Type", "audio/wav");
+        start.Content = new StringContent(startBody, Encoding.UTF8, "application/json");
+        using var startResponse = await Http.SendAsync(start);
+        var startResponseBody = await startResponse.Content.ReadAsStringAsync();
+        EnsureSuccess(startResponse, startResponseBody);
+
+        if (!startResponse.Headers.TryGetValues("X-Goog-Upload-URL", out var uploadUrls))
+        {
+            throw new InvalidOperationException("Gemini Upload-URL fehlt in der API-Antwort.");
+        }
+
+        using var upload = new HttpRequestMessage(HttpMethod.Post, uploadUrls.First());
+        upload.Headers.Add("X-Goog-Upload-Offset", "0");
+        upload.Headers.Add("X-Goog-Upload-Command", "upload, finalize");
+        upload.Content = new ByteArrayContent(bytes);
+        upload.Content.Headers.ContentType = new MediaTypeHeaderValue("audio/wav");
+        using var uploadResponse = await Http.SendAsync(upload);
+        var uploadBody = await uploadResponse.Content.ReadAsStringAsync();
+        EnsureSuccess(uploadResponse, uploadBody);
+        using var uploadedJson = JsonDocument.Parse(uploadBody);
+        var file = uploadedJson.RootElement.GetProperty("file");
+        var uri = file.GetProperty("uri").GetString() ?? throw new InvalidOperationException("Gemini File-URI fehlt.");
+        var mimeType = file.TryGetProperty("mimeType", out var mt) ? mt.GetString() ?? "audio/wav" : "audio/wav";
+
+        var generateBody = JsonSerializer.Serialize(new
+        {
+            contents = new[]
+            {
+                new
+                {
+                    parts = new object[]
+                    {
+                        new { file_data = new { mime_type = mimeType, file_uri = uri } },
+                        new { text = $"Transcribe the speech in this audio. Return only the transcript text. Language hint: {config.Language}." }
+                    }
+                }
+            }
+        });
+
+        var model = string.IsNullOrWhiteSpace(config.Model) ? "gemini-3.1-flash-lite" : config.Model;
+        using var generate = new HttpRequestMessage(HttpMethod.Post, $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+        generate.Headers.Add("x-goog-api-key", apiKey);
+        generate.Content = new StringContent(generateBody, Encoding.UTF8, "application/json");
+        using var generateResponse = await Http.SendAsync(generate);
+        var generateResponseBody = await generateResponse.Content.ReadAsStringAsync();
+        EnsureSuccess(generateResponse, generateResponseBody);
+        using var json = JsonDocument.Parse(generateResponseBody);
+        return json.RootElement.GetProperty("candidates")[0].GetProperty("content").GetProperty("parts")[0].GetProperty("text").GetString() ?? "";
+    }
+
+    private async Task<string> TranscribeXaiAsync(string wavPath)
+    {
+        var apiKey = config.ResolveApiKey("XAI_API_KEY");
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(config.Language), "language");
+        form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue("audio/wav") }
+        }, "file", "recording.wav");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.x.ai/v1/stt");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        request.Content = form;
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureSuccess(response, body);
+        return JsonText(body, "text");
+    }
+
+    private static void EnsureSuccess(HttpResponseMessage response, string body)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var detail = body.Length > 900 ? body[..900] : body;
+        throw new InvalidOperationException($"API-Fehler {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
+    }
+    private static string JsonText(string body, string property)
+    {
+        using var json = JsonDocument.Parse(body);
+        return json.RootElement.TryGetProperty(property, out var value) ? value.GetString() ?? "" : body;
+    }
+}
+
+sealed class BillingClient(AppConfig config)
+{
+    private static readonly HttpClient Http = new();
+    private AppConfig config = config;
+
+    public void UpdateConfig(AppConfig nextConfig)
+    {
+        config = nextConfig;
+    }
+
+    public Task<BillingSummary> GetSummaryAsync()
+    {
+        config = AppConfig.Load();
+        return config.Provider.ToLowerInvariant() switch
+        {
+            "elevenlabs" => GetElevenLabsSummaryAsync(),
+            "openai" => GetOpenAiSummaryAsync(),
+            "gemini" => Task.FromResult(new BillingSummary(
+                "Gemini verwaltet Guthaben und Abrechnung über Google Cloud Billing. Ich öffne die Usage-&-Billing-Seite; eine einfache API-Key-Guthabenabfrage gibt es dafür nicht.",
+                "https://aistudio.google.com/usage")),
+            "xai" => Task.FromResult(new BillingSummary(
+                "xAI zeigt Prepaid Credits und Usage in der Console. Ein offizieller Guthaben-Endpunkt ist in der REST-API nicht dokumentiert. Ich öffne die Billing-Seite.",
+                "https://console.x.ai/team/default/billing")),
+            _ => Task.FromResult(new BillingSummary($"Unbekannter Provider '{config.Provider}'.", null, true))
+        };
+    }
+
+    private async Task<BillingSummary> GetElevenLabsSummaryAsync()
+    {
+        var apiKey = config.ResolveApiKey("ELEVENLABS_API_KEY");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.elevenlabs.io/v1/user/subscription");
+        request.Headers.Add("xi-api-key", apiKey);
+
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureSuccess(response, body);
+
+        using var json = JsonDocument.Parse(body);
+        var root = json.RootElement;
+        var tier = ReadString(root, "tier", "unbekannt");
+        var status = ReadString(root, "status", "unbekannt");
+        var used = ReadLong(root, "character_count");
+        var limit = ReadLong(root, "character_limit");
+        var resetUnix = ReadLong(root, "next_character_count_reset_unix");
+        var currency = ReadString(root, "currency", "").ToUpperInvariant();
+        var overage = "";
+
+        if (root.TryGetProperty("current_overage", out var currentOverage))
+        {
+            var amount = ReadString(currentOverage, "amount", "");
+            var overageCurrency = ReadString(currentOverage, "currency", currency).ToUpperInvariant();
+            if (!string.IsNullOrWhiteSpace(amount) && amount != "0")
+            {
+                overage = $"{Environment.NewLine}Overage: {amount} {overageCurrency}";
+            }
+        }
+
+        var remaining = limit > 0 ? Math.Max(0, limit - used) : 0;
+        var reset = resetUnix > 0
+            ? DateTimeOffset.FromUnixTimeSeconds(resetUnix).LocalDateTime.ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentCulture)
+            : "unbekannt";
+        var percent = limit > 0 ? used / (double)limit : 0;
+
+        return new BillingSummary(
+            $"ElevenLabs{Environment.NewLine}" +
+            $"Plan: {tier} ({status}){Environment.NewLine}" +
+            $"Verbraucht: {used:N0} / {limit:N0} Credits/Zeichen ({percent:P0}){Environment.NewLine}" +
+            $"Rest: {remaining:N0}{Environment.NewLine}" +
+            $"Reset: {reset}" +
+            (string.IsNullOrWhiteSpace(currency) ? "" : $"{Environment.NewLine}Währung: {currency}") +
+            overage);
+    }
+
+    private async Task<BillingSummary> GetOpenAiSummaryAsync()
+    {
+        var adminKey = config.ResolveOpenAiAdminKey();
+        var now = DateTimeOffset.UtcNow;
+        var monthStart = new DateTimeOffset(now.Year, now.Month, 1, 0, 0, 0, TimeSpan.Zero);
+        var url = $"https://api.openai.com/v1/organization/costs?start_time={monthStart.ToUnixTimeSeconds()}&end_time={now.ToUnixTimeSeconds()}&limit=31";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", adminKey);
+
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureOpenAiCostsSuccess(response, body);
+
+        using var json = JsonDocument.Parse(body);
+        decimal total = 0;
+        var currency = "USD";
+
+        foreach (var bucket in json.RootElement.GetProperty("data").EnumerateArray())
+        {
+            if (!bucket.TryGetProperty("results", out var results))
+            {
+                continue;
+            }
+
+            foreach (var result in results.EnumerateArray())
+            {
+                if (!result.TryGetProperty("amount", out var amount))
+                {
+                    continue;
+                }
+
+                if (amount.TryGetProperty("value", out var value) && TryReadDecimal(value, out var decimalValue))
+                {
+                    total += decimalValue;
+                }
+
+                currency = ReadString(amount, "currency", currency).ToUpperInvariant();
+            }
+        }
+
+        return new BillingSummary(
+            $"OpenAI{Environment.NewLine}" +
+            $"Kosten seit {monthStart.LocalDateTime:dd.MM.yyyy}: {total:N4} {currency}{Environment.NewLine}" +
+            $"Hinweis: Das ist die offizielle Costs-API, nicht dein verbleibendes Prepaid-Guthaben. Das Guthaben siehst du in der Billing Overview.");
+    }
+
+    private static void EnsureSuccess(HttpResponseMessage response, string body)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var detail = body.Length > 900 ? body[..900] : body;
+        throw new InvalidOperationException($"API-Fehler {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
+    }
+
+    private static void EnsureOpenAiCostsSuccess(HttpResponseMessage response, string body)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        if ((int)response.StatusCode == 403 && body.Contains("api.usage.read", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new OpenAiUsagePermissionException(
+                "OpenAI hat die Kostenabfrage abgelehnt: Für Usage/Costs brauchst du einen OpenAI Admin API Key mit api.usage.read. " +
+                "Ein normaler Projekt- oder Service-Account-Key reicht dafür nicht, auch wenn dort 'All' Permissions steht. " +
+                "Erstelle den Key unter Organization/Admin API Keys und trage ihn als OpenAI Admin-Key ein.");
+        }
+
+        EnsureSuccess(response, body);
+    }
+
+    private static string ReadString(JsonElement root, string name, string fallback)
+    {
+        return root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? fallback
+            : fallback;
+    }
+
+    private static long ReadLong(JsonElement root, string name)
+    {
+        return root.TryGetProperty(name, out var value) && value.TryGetInt64(out var result)
+            ? result
+            : 0;
+    }
+
+    private static bool TryReadDecimal(JsonElement value, out decimal result)
+    {
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            return value.TryGetDecimal(out result);
+        }
+
+        if (value.ValueKind == JsonValueKind.String &&
+            decimal.TryParse(value.GetString(), NumberStyles.Number, CultureInfo.InvariantCulture, out result))
+        {
+            return true;
+        }
+
+        result = 0;
+        return false;
+    }
+}
+
+sealed record BillingSummary(string Message, string? OpenUrl = null, bool IsError = false);
+
+static class OpenAiLinks
+{
+    public const string AdminApiKeys = "https://platform.openai.com/settings/organization/admin-keys";
+}
+
+sealed class MissingOpenAiAdminKeyException(string message) : InvalidOperationException(message);
+
+sealed class OpenAiUsagePermissionException(string message) : InvalidOperationException(message);
+
+sealed record AppConfig(
+    string Provider,
+    string Model,
+    string Language,
+    string? ApiKey,
+    string? OpenAiAdminKey,
+    IReadOnlyDictionary<string, string> ProviderApiKeys,
+    string SummaryProvider,
+    IReadOnlyDictionary<string, string> SummaryModels,
+    string UrlSummaryPrompt,
+    bool AppFetchUrl,
+    Hotkey Hotkey)
+{
+    public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    public static readonly string[] SupportedProviders = ["openai", "elevenlabs", "gemini", "xai"];
+    public static readonly string[] SupportedSummaryProviders = ["openai", "gemini", "anthropic", "xai"];
+
+    public static string DefaultModelFor(string provider)
+    {
+        return provider.ToLowerInvariant() switch
+        {
+            "elevenlabs" => "scribe_v2",
+            "gemini" => "gemini-3.1-flash-lite",
+            "xai" => "xai-stt",
+            _ => "gpt-4o-mini-transcribe"
+        };
+    }
+
+    public static string DefaultSummaryModelFor(string provider)
+    {
+        return provider.ToLowerInvariant() switch
+        {
+            "gemini" => "gemini-3.1-flash-lite",
+            "anthropic" => "claude-sonnet-4-6",
+            "xai" => "grok-4.3",
+            _ => "gpt-5.4-mini"
+        };
+    }
+
+    public static string[] EnvNamesFor(string provider)
+    {
+        return provider.ToLowerInvariant() switch
+        {
+            "openai" => ["OPENAI_API_KEY"],
+            "elevenlabs" => ["ELEVENLABS_API_KEY"],
+            "gemini" => ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            "anthropic" => ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
+            "xai" => ["XAI_API_KEY"],
+            _ => []
+        };
+    }
+
+    public static bool HasEnvironmentApiKey(string provider)
+    {
+        foreach (var name in EnvNamesFor(provider))
+        {
+            var value = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User)
+                ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Process)
+                ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Machine);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static AppConfig Load()
+    {
+        if (!File.Exists(ConfigPath))
+        {
+            File.WriteAllText(ConfigPath, """
+            {
+              "provider": "openai",
+              "model": "gpt-4o-mini-transcribe",
+              "language": "de",
+              "apiKey": "",
+              "apiKeys": {},
+              "openAiAdminKey": "",
+              "summaryProvider": "openai",
+              "summaryModels": {},
+              "urlSummaryPrompt": "",
+              "appFetchUrl": true,
+              "hotkey": "Alt+A"
+            }
+            """);
+        }
+
+        using var json = JsonDocument.Parse(File.ReadAllText(ConfigPath));
+        var root = json.RootElement;
+        var provider = ReadString(root, "provider", "openai");
+        if (!SupportedProviders.Contains(provider, StringComparer.OrdinalIgnoreCase))
+        {
+            provider = "openai";
+        }
+        var defaultModel = DefaultModelFor(provider);
+        var providerApiKeys = ReadApiKeys(root);
+        var legacyApiKey = ReadString(root, "apiKey", "");
+        if (!string.IsNullOrWhiteSpace(legacyApiKey) && !providerApiKeys.ContainsKey(provider.ToLowerInvariant()))
+        {
+            providerApiKeys[provider.ToLowerInvariant()] = legacyApiKey;
+        }
+        var currentApiKey = providerApiKeys.TryGetValue(provider.ToLowerInvariant(), out var providerApiKey)
+            ? providerApiKey
+            : legacyApiKey;
+
+        var model = ReadString(root, "model", defaultModel);
+        if (string.IsNullOrWhiteSpace(model) || (provider.ToLowerInvariant() != "openai" && model == "gpt-4o-mini-transcribe"))
+        {
+            model = defaultModel;
+        }
+
+        return new AppConfig(
+            provider,
+            model,
+            ReadString(root, "language", "de"),
+            currentApiKey,
+            ReadString(root, "openAiAdminKey", ""),
+            providerApiKeys,
+            NormalizeSummaryProvider(ReadString(root, "summaryProvider", provider.Equals("elevenlabs", StringComparison.OrdinalIgnoreCase) ? "openai" : provider)),
+            ReadStringMap(root, "summaryModels"),
+            ReadString(root, "urlSummaryPrompt", ""),
+            ReadBool(root, "appFetchUrl", true),
+            Hotkey.Parse(ReadString(root, "hotkey", "Alt+A")));
+    }
+
+    public void Save()
+    {
+        var providerKey = Provider.ToLowerInvariant();
+        var apiKeys = new Dictionary<string, string>(ProviderApiKeys, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(ApiKey))
+        {
+            apiKeys[providerKey] = ApiKey;
+        }
+
+        var payload = new
+        {
+            provider = Provider,
+            model = Model,
+            language = Language,
+            apiKey = ApiKey ?? "",
+            apiKeys,
+            openAiAdminKey = OpenAiAdminKey ?? "",
+            summaryProvider = SummaryProvider,
+            summaryModels = SummaryModels,
+            urlSummaryPrompt = UrlSummaryPrompt,
+            appFetchUrl = AppFetchUrl,
+            hotkey = Hotkey.Display
+        };
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(ConfigPath, json);
+    }
+
+    public string ResolveApiKey(params string[] envNames)
+    {
+        var providerKey = Provider.ToLowerInvariant();
+        if (ProviderApiKeys.TryGetValue(providerKey, out var providerApiKey) && !string.IsNullOrWhiteSpace(providerApiKey))
+        {
+            return providerApiKey;
+        }
+
+        if (!string.IsNullOrWhiteSpace(ApiKey))
+        {
+            return ApiKey;
+        }
+
+        foreach (var name in envNames)
+        {
+            var value = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User)
+                ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Process)
+                ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Machine);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        throw new InvalidOperationException($"API-Key fehlt. Trage ihn in {ConfigPath} ein oder setze {string.Join(" / ", envNames)}.");
+    }
+
+    public string GetApiKeyForProvider(string provider)
+    {
+        var providerKey = provider.ToLowerInvariant();
+        if (ProviderApiKeys.TryGetValue(providerKey, out var providerApiKey))
+        {
+            return providerApiKey;
+        }
+
+        return provider.Equals(Provider, StringComparison.OrdinalIgnoreCase) ? ApiKey ?? "" : "";
+    }
+
+    public AppConfig WithProvider(string provider, string? apiKey)
+    {
+        var providerKey = provider.ToLowerInvariant();
+        var currentProviderKey = Provider.ToLowerInvariant();
+        var apiKeys = new Dictionary<string, string>(ProviderApiKeys, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(ApiKey))
+        {
+            apiKeys[currentProviderKey] = ApiKey;
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            apiKeys[providerKey] = apiKey;
+        }
+
+        var nextApiKey = apiKeys.TryGetValue(providerKey, out var existingKey) ? existingKey : "";
+        return new AppConfig(
+            provider,
+            DefaultModelFor(provider),
+            Language,
+            nextApiKey,
+            OpenAiAdminKey,
+            apiKeys,
+            SummaryProvider,
+            SummaryModels,
+            UrlSummaryPrompt,
+            AppFetchUrl,
+            Hotkey);
+    }
+
+    public string SummaryModelFor(string provider)
+    {
+        return SummaryModels.TryGetValue(provider.ToLowerInvariant(), out var model) && !string.IsNullOrWhiteSpace(model)
+            ? model
+            : DefaultSummaryModelFor(provider);
+    }
+
+    public AppConfig WithSummaryProvider(string provider, string? apiKey)
+    {
+        var providerKey = provider.ToLowerInvariant();
+        var apiKeys = new Dictionary<string, string>(ProviderApiKeys, StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(ApiKey))
+        {
+            apiKeys[Provider.ToLowerInvariant()] = ApiKey;
+        }
+
+        if (!string.IsNullOrWhiteSpace(apiKey))
+        {
+            apiKeys[providerKey] = apiKey;
+        }
+
+        var summaryModels = new Dictionary<string, string>(SummaryModels, StringComparer.OrdinalIgnoreCase);
+        if (!summaryModels.ContainsKey(providerKey) || string.IsNullOrWhiteSpace(summaryModels[providerKey]))
+        {
+            summaryModels[providerKey] = DefaultSummaryModelFor(providerKey);
+        }
+
+        return this with
+        {
+            ProviderApiKeys = apiKeys,
+            SummaryProvider = providerKey,
+            SummaryModels = summaryModels
+        };
+    }
+
+    public string ResolveOpenAiAdminKey()
+    {
+        if (!string.IsNullOrWhiteSpace(OpenAiAdminKey))
+        {
+            return OpenAiAdminKey;
+        }
+
+        var value = Environment.GetEnvironmentVariable("OPENAI_ADMIN_KEY", EnvironmentVariableTarget.User)
+            ?? Environment.GetEnvironmentVariable("OPENAI_ADMIN_KEY", EnvironmentVariableTarget.Process)
+            ?? Environment.GetEnvironmentVariable("OPENAI_ADMIN_KEY", EnvironmentVariableTarget.Machine)
+            ?? Environment.GetEnvironmentVariable("OPENAI_ADMIN_API_KEY", EnvironmentVariableTarget.User)
+            ?? Environment.GetEnvironmentVariable("OPENAI_ADMIN_API_KEY", EnvironmentVariableTarget.Process)
+            ?? Environment.GetEnvironmentVariable("OPENAI_ADMIN_API_KEY", EnvironmentVariableTarget.Machine);
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        throw new MissingOpenAiAdminKeyException(
+            $"OpenAI Admin API Key fehlt. Erstelle ihn unter Organization/Admin API Keys und trage ihn in {ConfigPath} unter openAiAdminKey ein oder setze OPENAI_ADMIN_KEY / OPENAI_ADMIN_API_KEY.");
+    }
+
+    private static string ReadString(JsonElement root, string name, string fallback)
+    {
+        return root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? fallback
+            : fallback;
+    }
+
+    private static Dictionary<string, string> ReadApiKeys(JsonElement root)
+    {
+        return ReadStringMap(root, "apiKeys");
+    }
+
+    private static Dictionary<string, string> ReadStringMap(JsonElement root, string name)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!root.TryGetProperty(name, out var apiKeys) || apiKeys.ValueKind != JsonValueKind.Object)
+        {
+            return result;
+        }
+
+        foreach (var property in apiKeys.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.String)
+            {
+                var value = property.Value.GetString();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    result[property.Name.ToLowerInvariant()] = value;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    private static bool ReadBool(JsonElement root, string name, bool fallback)
+    {
+        return root.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? value.GetBoolean()
+            : fallback;
+    }
+
+    private static string NormalizeSummaryProvider(string provider)
+    {
+        return SupportedSummaryProviders.Contains(provider, StringComparer.OrdinalIgnoreCase)
+            ? provider.ToLowerInvariant()
+            : "openai";
+    }
+}
+
+sealed class ApiKeyPromptForm : Form
+{
+    private readonly string provider;
+    private readonly TextBox apiKeyBox = new();
+
+    public string ApiKey => apiKeyBox.Text.Trim();
+
+    public ApiKeyPromptForm(string provider)
+    {
+        this.provider = provider;
+        Text = $"API-Key für {provider}";
+        StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ClientSize = new Size(520, 220);
+        Font = new Font("Segoe UI", 9F);
+
+        var envNames = string.Join(" / ", AppConfig.EnvNamesFor(provider));
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(16),
+            ColumnCount = 1,
+            RowCount = 4
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+
+        var label = new Label
+        {
+            Text = $"Für {provider} ist noch kein API-Key hinterlegt.",
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        layout.Controls.Add(label, 0, 0);
+
+        apiKeyBox.Dock = DockStyle.Fill;
+        apiKeyBox.UseSystemPasswordChar = true;
+        layout.Controls.Add(apiKeyBox, 0, 1);
+
+        var hint = new Label
+        {
+            Text = string.IsNullOrWhiteSpace(envNames) ? "Der Key wird in appsettings.json gespeichert." : $"Alternativ kannst du {envNames} als Umgebungsvariable setzen.",
+            ForeColor = Color.FromArgb(90, 96, 105),
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        layout.Controls.Add(hint, 0, 2);
+
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 10, 0, 0),
+            WrapContents = false
+        };
+        var saveButton = new Button { Text = "Speichern", Width = 92, DialogResult = DialogResult.OK };
+        var cancelButton = new Button { Text = "Abbrechen", Width = 92, DialogResult = DialogResult.Cancel };
+        saveButton.Click += (_, _) => ValidateApiKey();
+        buttons.Controls.Add(saveButton);
+        buttons.Controls.Add(cancelButton);
+        layout.Controls.Add(buttons, 0, 3);
+
+        AcceptButton = saveButton;
+        CancelButton = cancelButton;
+        Controls.Add(layout);
+    }
+
+    private void ValidateApiKey()
+    {
+        if (!string.IsNullOrWhiteSpace(apiKeyBox.Text))
+        {
+            return;
+        }
+
+        DialogResult = DialogResult.None;
+        MessageBox.Show(this, $"Bitte einen API-Key für {provider} eintragen.", "API-Key fehlt", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+}
+
+sealed class OpenAiAdminKeyHelpForm : Form
+{
+    public OpenAiAdminKeyHelpForm(string message)
+    {
+        Text = "OpenAI Admin-Key";
+        StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ClientSize = new Size(560, 230);
+        Font = new Font("Segoe UI", 9F);
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(16),
+            ColumnCount = 1,
+            RowCount = 3
+        };
+        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+
+        var label = new Label
+        {
+            Text = message,
+            Dock = DockStyle.Fill,
+            AutoEllipsis = false
+        };
+        layout.Controls.Add(label, 0, 0);
+
+        var link = new LinkLabel
+        {
+            Text = OpenAiLinks.AdminApiKeys,
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft,
+            LinkColor = Color.FromArgb(0, 102, 204),
+            ActiveLinkColor = Color.FromArgb(0, 80, 160)
+        };
+        link.LinkClicked += (_, _) => OpenUrl(OpenAiLinks.AdminApiKeys);
+        layout.Controls.Add(link, 0, 1);
+
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 10, 0, 0),
+            WrapContents = false
+        };
+        var okButton = new Button { Text = "OK", Width = 92, DialogResult = DialogResult.OK };
+        var openButton = new Button { Text = "Seite öffnen", Width = 105 };
+        openButton.Click += (_, _) => OpenUrl(OpenAiLinks.AdminApiKeys);
+        buttons.Controls.Add(okButton);
+        buttons.Controls.Add(openButton);
+        layout.Controls.Add(buttons, 0, 2);
+
+        AcceptButton = okButton;
+        Controls.Add(layout);
+    }
+
+    private static void OpenUrl(string url)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true
+        });
+    }
+}
+
+sealed class SettingsForm : Form
+{
+    private readonly ComboBox sttProviderBox = new();
+    private readonly TextBox sttModelBox = new();
+    private readonly TextBox languageBox = new();
+    private readonly ComboBox summaryProviderBox = new();
+    private readonly TextBox summaryModelBox = new();
+    private readonly CheckBox appFetchUrlBox = new();
+    private readonly TextBox urlSummaryPromptBox = new();
+    private readonly Dictionary<string, TextBox> apiKeyBoxes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly TextBox openAiAdminKeyBox = new();
+    private readonly TextBox hotkeyBox = new();
+    private readonly CheckBox showKeysBox = new();
+    private readonly Label hotkeyStatusLabel = new();
+    private readonly Dictionary<string, string> editedProviderApiKeys = new(StringComparer.OrdinalIgnoreCase);
+    private string lastSttProvider;
+    private string lastSummaryProvider;
+
+    public AppConfig Config { get; private set; }
+
+    public SettingsForm(AppConfig config)
+    {
+        Config = config;
+        lastSttProvider = config.Provider;
+        lastSummaryProvider = config.SummaryProvider;
+        foreach (var entry in config.ProviderApiKeys)
+        {
+            editedProviderApiKeys[entry.Key] = entry.Value;
+        }
+
+        if (!string.IsNullOrWhiteSpace(config.ApiKey))
+        {
+            editedProviderApiKeys[config.Provider] = config.ApiKey;
+        }
+
+        Text = "EchoScribe Einstellungen";
+        StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ClientSize = new Size(720, 560);
+        Font = new Font("Segoe UI", 9F);
+
+        sttProviderBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        sttProviderBox.Items.AddRange(AppConfig.SupportedProviders.Cast<object>().ToArray());
+        sttProviderBox.SelectedItem = AppConfig.SupportedProviders.Contains(config.Provider, StringComparer.OrdinalIgnoreCase)
+            ? config.Provider.ToLowerInvariant()
+            : "openai";
+        sttModelBox.Text = string.IsNullOrWhiteSpace(config.Model) ? AppConfig.DefaultModelFor(config.Provider) : config.Model;
+        languageBox.Text = config.Language;
+        openAiAdminKeyBox.Text = config.OpenAiAdminKey ?? "";
+        openAiAdminKeyBox.UseSystemPasswordChar = true;
+
+        summaryProviderBox.DropDownStyle = ComboBoxStyle.DropDownList;
+        summaryProviderBox.Items.AddRange(AppConfig.SupportedSummaryProviders.Cast<object>().ToArray());
+        summaryProviderBox.SelectedItem = AppConfig.SupportedSummaryProviders.Contains(config.SummaryProvider, StringComparer.OrdinalIgnoreCase)
+            ? config.SummaryProvider.ToLowerInvariant()
+            : "openai";
+        summaryModelBox.Text = config.SummaryModelFor(summaryProviderBox.SelectedItem?.ToString() ?? "openai");
+        appFetchUrlBox.Text = "Webseiteninhalt bei Bedarf lokal abrufen";
+        appFetchUrlBox.Checked = config.AppFetchUrl;
+        appFetchUrlBox.AutoSize = true;
+        urlSummaryPromptBox.Text = config.UrlSummaryPrompt;
+        urlSummaryPromptBox.Multiline = true;
+        urlSummaryPromptBox.ScrollBars = ScrollBars.Vertical;
+        urlSummaryPromptBox.AcceptsReturn = true;
+        urlSummaryPromptBox.AcceptsTab = true;
+
+        hotkeyBox.Text = config.Hotkey.Display;
+        hotkeyBox.ReadOnly = true;
+        hotkeyBox.BackColor = SystemColors.Window;
+        hotkeyBox.TabStop = true;
+        hotkeyBox.KeyDown += CaptureHotkey;
+        hotkeyBox.GotFocus += (_, _) => hotkeyStatusLabel.Text = "Jetzt Tastenkombination drücken";
+        hotkeyBox.Click += (_, _) => hotkeyBox.SelectAll();
+
+        sttProviderBox.SelectedIndexChanged += (_, _) =>
+        {
+            var provider = sttProviderBox.SelectedItem?.ToString() ?? "openai";
+            var oldDefault = AppConfig.DefaultModelFor(lastSttProvider);
+            if (string.IsNullOrWhiteSpace(sttModelBox.Text) || sttModelBox.Text == oldDefault)
+            {
+                sttModelBox.Text = AppConfig.DefaultModelFor(provider);
+            }
+
+            lastSttProvider = provider;
+        };
+
+        summaryProviderBox.SelectedIndexChanged += (_, _) =>
+        {
+            var provider = summaryProviderBox.SelectedItem?.ToString() ?? "openai";
+            var oldDefault = AppConfig.DefaultSummaryModelFor(lastSummaryProvider);
+            if (string.IsNullOrWhiteSpace(summaryModelBox.Text) || summaryModelBox.Text == oldDefault)
+            {
+                summaryModelBox.Text = Config.SummaryModelFor(provider);
+            }
+
+            lastSummaryProvider = provider;
+        };
+
+        hotkeyStatusLabel.Text = "Feld anklicken und gewünschte Tastenkombination drücken";
+        hotkeyStatusLabel.ForeColor = Color.FromArgb(90, 96, 105);
+        hotkeyStatusLabel.Dock = DockStyle.Fill;
+
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(BuildAudioTab());
+        tabs.TabPages.Add(BuildSummaryTab());
+        tabs.TabPages.Add(BuildKeysTab());
+
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 8, 0, 0),
+            WrapContents = false
+        };
+        var saveButton = new Button { Text = "Speichern", Width = 92, DialogResult = DialogResult.OK };
+        var cancelButton = new Button { Text = "Abbrechen", Width = 92, DialogResult = DialogResult.Cancel };
+        saveButton.Click += (_, e) => SaveSettings(e);
+        buttons.Controls.Add(saveButton);
+        buttons.Controls.Add(cancelButton);
+
+        AcceptButton = saveButton;
+        CancelButton = cancelButton;
+
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(12),
+            ColumnCount = 1,
+            RowCount = 2
+        };
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
+        root.Controls.Add(tabs, 0, 0);
+        root.Controls.Add(buttons, 0, 1);
+        Controls.Add(root);
+    }
+
+    private TabPage BuildAudioTab()
+    {
+        var tab = new TabPage("Audio");
+        var layout = CreateFormLayout(6);
+        AddHeader(layout, 0, "Speech-to-Text");
+        AddRow(layout, 1, "STT-Provider", sttProviderBox);
+        AddRow(layout, 2, "STT-Modell", sttModelBox);
+        AddRow(layout, 3, "Sprache", languageBox);
+        AddRow(layout, 4, "Hotkey", hotkeyBox);
+        layout.Controls.Add(new Label(), 0, 5);
+        layout.Controls.Add(hotkeyStatusLabel, 1, 5);
+        tab.Controls.Add(layout);
+        return tab;
+    }
+
+    private TabPage BuildSummaryTab()
+    {
+        var tab = new TabPage("Web Summary");
+        var layout = CreateFormLayout(6);
+        AddHeader(layout, 0, "Chrome-Zusammenfassungen");
+        AddRow(layout, 1, "Summary-Provider", summaryProviderBox);
+        AddRow(layout, 2, "Summary-Modell", summaryModelBox);
+        layout.Controls.Add(new Label(), 0, 3);
+        layout.Controls.Add(appFetchUrlBox, 1, 3);
+        AddRow(layout, 4, "URL-Prompt", urlSummaryPromptBox);
+        layout.RowStyles[4].SizeType = SizeType.Percent;
+        layout.RowStyles[4].Height = 100;
+        var hint = new Label
+        {
+            Text = "Claude ist hier für Textzusammenfassungen eingebunden; STT/TTS läuft über die Audio-Provider.",
+            ForeColor = Color.FromArgb(90, 96, 105),
+            Dock = DockStyle.Fill,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        layout.Controls.Add(new Label(), 0, 5);
+        layout.Controls.Add(hint, 1, 5);
+        tab.Controls.Add(layout);
+        return tab;
+    }
+
+    private TabPage BuildKeysTab()
+    {
+        var tab = new TabPage("API-Keys");
+        var layout = CreateFormLayout(8);
+        AddHeader(layout, 0, "Provider-Keys");
+        var row = 1;
+        foreach (var provider in new[] { "openai", "elevenlabs", "gemini", "anthropic", "xai" })
+        {
+            var box = new TextBox
+            {
+                Text = editedProviderApiKeys.TryGetValue(provider, out var value) ? value : "",
+                UseSystemPasswordChar = true,
+                Dock = DockStyle.Fill
+            };
+            apiKeyBoxes[provider] = box;
+            AddRow(layout, row++, ProviderLabel(provider), box);
+        }
+
+        AddRow(layout, row++, "OpenAI Admin-Key", openAiAdminKeyBox);
+        showKeysBox.Text = "Keys anzeigen";
+        showKeysBox.AutoSize = true;
+        showKeysBox.CheckedChanged += (_, _) => SetKeyMask(!showKeysBox.Checked);
+        layout.Controls.Add(new Label(), 0, row);
+        layout.Controls.Add(showKeysBox, 1, row);
+        tab.Controls.Add(layout);
+        return tab;
+    }
+
+    private static TableLayoutPanel CreateFormLayout(int rows)
+    {
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(14),
+            ColumnCount = 2,
+            RowCount = rows
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (var i = 0; i < rows; i++)
+        {
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, i == 0 ? 38 : 42));
+        }
+
+        return layout;
+    }
+
+    private static void AddHeader(TableLayoutPanel layout, int row, string text)
+    {
+        var label = new Label
+        {
+            Text = text,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 10F, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        layout.Controls.Add(label, 0, row);
+        layout.SetColumnSpan(label, 2);
+    }
+
+    private void CaptureHotkey(object? sender, KeyEventArgs e)
+    {
+        e.SuppressKeyPress = true;
+        e.Handled = true;
+
+        if (e.KeyCode is Keys.ControlKey or Keys.ShiftKey or Keys.Menu or Keys.LWin or Keys.RWin)
+        {
+            hotkeyStatusLabel.Text = "Noch eine normale Taste dazu drücken";
+            hotkeyStatusLabel.ForeColor = Color.FromArgb(170, 120, 20);
+            return;
+        }
+
+        var candidate = Hotkey.FromPressedKeys(e.KeyCode);
+        if (!candidate.HasAnyModifier)
+        {
+            hotkeyStatusLabel.Text = "Bitte mit Win, Alt, Ctrl oder Shift kombinieren";
+            hotkeyStatusLabel.ForeColor = Color.FromArgb(170, 120, 20);
+            return;
+        }
+
+        if (candidate.Display == Config.Hotkey.Display || HotkeyProbe.IsAvailable(candidate))
+        {
+            hotkeyBox.Text = candidate.Display;
+            hotkeyStatusLabel.Text = "Hotkey ist verfügbar";
+            hotkeyStatusLabel.ForeColor = Color.FromArgb(38, 166, 91);
+            return;
+        }
+
+        hotkeyStatusLabel.Text = "Diese Kombination ist bereits vergeben";
+        hotkeyStatusLabel.ForeColor = Color.FromArgb(200, 60, 60);
+    }
+
+    private static void AddRow(TableLayoutPanel layout, int row, string label, Control input, Label? labelControl = null)
+    {
+        labelControl ??= new Label();
+        labelControl.Text = label;
+        labelControl.Dock = DockStyle.Fill;
+        labelControl.TextAlign = ContentAlignment.MiddleLeft;
+        input.Dock = DockStyle.Fill;
+        layout.Controls.Add(labelControl, 0, row);
+        layout.Controls.Add(input, 1, row);
+    }
+
+    private void SetKeyMask(bool masked)
+    {
+        foreach (var box in apiKeyBoxes.Values)
+        {
+            box.UseSystemPasswordChar = masked;
+        }
+
+        openAiAdminKeyBox.UseSystemPasswordChar = masked;
+    }
+
+    private static string ProviderLabel(string provider)
+    {
+        return provider switch
+        {
+            "openai" => "OpenAI",
+            "elevenlabs" => "ElevenLabs",
+            "gemini" => "Gemini",
+            "anthropic" => "Claude",
+            "xai" => "xAI",
+            _ => provider
+        };
+    }
+
+    private void SaveSettings(EventArgs e)
+    {
+        try
+        {
+            var provider = sttProviderBox.SelectedItem?.ToString() ?? "openai";
+            var summaryProvider = summaryProviderBox.SelectedItem?.ToString() ?? "openai";
+            var apiKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in apiKeyBoxes)
+            {
+                var value = entry.Value.Text.Trim();
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    apiKeys[entry.Key] = value;
+                }
+            }
+
+            var summaryModels = new Dictionary<string, string>(Config.SummaryModels, StringComparer.OrdinalIgnoreCase)
+            {
+                [summaryProvider] = string.IsNullOrWhiteSpace(summaryModelBox.Text)
+                    ? AppConfig.DefaultSummaryModelFor(summaryProvider)
+                    : summaryModelBox.Text.Trim()
+            };
+            var sttApiKey = apiKeys.TryGetValue(provider, out var providerApiKey) ? providerApiKey : "";
+
+            Config = new AppConfig(
+                provider,
+                string.IsNullOrWhiteSpace(sttModelBox.Text) ? AppConfig.DefaultModelFor(provider) : sttModelBox.Text.Trim(),
+                string.IsNullOrWhiteSpace(languageBox.Text) ? "de" : languageBox.Text.Trim(),
+                sttApiKey,
+                openAiAdminKeyBox.Text.Trim(),
+                apiKeys,
+                summaryProvider,
+                summaryModels,
+                urlSummaryPromptBox.Text.Trim(),
+                appFetchUrlBox.Checked,
+                Hotkey.Parse(string.IsNullOrWhiteSpace(hotkeyBox.Text) ? "Alt+A" : hotkeyBox.Text.Trim()));
+            Config.Save();
+        }
+        catch (Exception ex)
+        {
+            DialogResult = DialogResult.None;
+            MessageBox.Show(this, ex.Message, "Einstellungen konnten nicht gespeichert werden", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+}
+
+sealed class Hotkey
+{
+    public string Display { get; }
+    public uint Modifiers { get; }
+    public Keys Key { get; }
+    public bool HasAnyModifier => (Modifiers & ~NativeMethods.ModNoRepeat) != 0;
+    private readonly Keys[] keysToPoll;
+
+    private Hotkey(string display, uint modifiers, Keys key, Keys[] keysToPoll)
+    {
+        Display = display;
+        Modifiers = modifiers;
+        Key = key;
+        this.keysToPoll = keysToPoll;
+    }
+
+    public static Hotkey Parse(string value)
+    {
+        var parts = value.Split('+', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        uint modifiers = NativeMethods.ModNoRepeat;
+        var pollKeys = new List<Keys>();
+        Keys mainKey = Keys.None;
+
+        foreach (var part in parts)
+        {
+            switch (part.ToLowerInvariant())
+            {
+                case "win":
+                case "windows":
+                    modifiers |= NativeMethods.ModWin;
+                    pollKeys.Add(Keys.LWin);
+                    pollKeys.Add(Keys.RWin);
+                    break;
+                case "alt":
+                    modifiers |= NativeMethods.ModAlt;
+                    pollKeys.Add(Keys.Menu);
+                    break;
+                case "shift":
+                    modifiers |= NativeMethods.ModShift;
+                    pollKeys.Add(Keys.ShiftKey);
+                    break;
+                case "ctrl":
+                case "control":
+                    modifiers |= NativeMethods.ModControl;
+                    pollKeys.Add(Keys.ControlKey);
+                    break;
+                default:
+                    mainKey = ParseKey(part);
+                    pollKeys.Add(mainKey);
+                    break;
+            }
+        }
+
+        if (mainKey == Keys.None)
+        {
+            mainKey = Keys.A;
+            pollKeys.Add(mainKey);
+        }
+
+        return new Hotkey(BuildDisplay(modifiers, mainKey), modifiers, mainKey, pollKeys.ToArray());
+    }
+
+    public static Hotkey FromPressedKeys(Keys key)
+    {
+        uint modifiers = NativeMethods.ModNoRepeat;
+        var pollKeys = new List<Keys>();
+
+        if (NativeMethods.IsKeyDown(Keys.LWin) || NativeMethods.IsKeyDown(Keys.RWin))
+        {
+            modifiers |= NativeMethods.ModWin;
+            pollKeys.Add(Keys.LWin);
+            pollKeys.Add(Keys.RWin);
+        }
+
+        if (NativeMethods.IsKeyDown(Keys.Menu) || NativeMethods.IsKeyDown(Keys.LMenu) || NativeMethods.IsKeyDown(Keys.RMenu))
+        {
+            modifiers |= NativeMethods.ModAlt;
+            pollKeys.Add(Keys.Menu);
+        }
+
+        if (NativeMethods.IsKeyDown(Keys.ControlKey) || NativeMethods.IsKeyDown(Keys.LControlKey) || NativeMethods.IsKeyDown(Keys.RControlKey))
+        {
+            modifiers |= NativeMethods.ModControl;
+            pollKeys.Add(Keys.ControlKey);
+        }
+
+        if (NativeMethods.IsKeyDown(Keys.ShiftKey) || NativeMethods.IsKeyDown(Keys.LShiftKey) || NativeMethods.IsKeyDown(Keys.RShiftKey))
+        {
+            modifiers |= NativeMethods.ModShift;
+            pollKeys.Add(Keys.ShiftKey);
+        }
+
+        pollKeys.Add(key);
+        return new Hotkey(BuildDisplay(modifiers, key), modifiers, key, pollKeys.ToArray());
+    }
+
+    private static Keys ParseKey(string part)
+    {
+        return part.ToLowerInvariant() switch
+        {
+            "`" or "~" or "tilde" or "oemtilde" => Keys.Oemtilde,
+            "^" or "caret" => Keys.Oemtilde,
+            "space" or "leer" or "leertaste" => Keys.Space,
+            "esc" => Keys.Escape,
+            _ => Enum.TryParse<Keys>(part, true, out var parsed) ? parsed : Keys.A
+        };
+    }
+
+    private static string BuildDisplay(uint modifiers, Keys key)
+    {
+        var parts = new List<string>();
+        if ((modifiers & NativeMethods.ModWin) != 0)
+        {
+            parts.Add("Win");
+        }
+
+        if ((modifiers & NativeMethods.ModAlt) != 0)
+        {
+            parts.Add("Alt");
+        }
+
+        if ((modifiers & NativeMethods.ModControl) != 0)
+        {
+            parts.Add("Ctrl");
+        }
+
+        if ((modifiers & NativeMethods.ModShift) != 0)
+        {
+            parts.Add("Shift");
+        }
+
+        parts.Add(DisplayKey(key));
+        return string.Join("+", parts);
+    }
+
+    private static string DisplayKey(Keys key)
+    {
+        return key switch
+        {
+            Keys.Oemtilde => "^",
+            Keys.Space => "Space",
+            Keys.Escape => "Esc",
+            _ => key.ToString()
+        };
+    }
+
+    public bool IsCurrentlyDown()
+    {
+        var winNeeded = (Modifiers & NativeMethods.ModWin) != 0;
+        foreach (var key in keysToPoll)
+        {
+            if (key is Keys.LWin or Keys.RWin)
+            {
+                continue;
+            }
+
+            if (!NativeMethods.IsKeyDown(key))
+            {
+                return false;
+            }
+        }
+
+        return !winNeeded || NativeMethods.IsKeyDown(Keys.LWin) || NativeMethods.IsKeyDown(Keys.RWin);
+    }
+
+    public bool MatchesPressed(IReadOnlySet<Keys> pressedKeys)
+    {
+        if ((Modifiers & NativeMethods.ModWin) != 0 && !ContainsAny(pressedKeys, Keys.LWin, Keys.RWin))
+        {
+            return false;
+        }
+
+        if ((Modifiers & NativeMethods.ModAlt) != 0 && !ContainsAny(pressedKeys, Keys.Menu, Keys.LMenu, Keys.RMenu))
+        {
+            return false;
+        }
+
+        if ((Modifiers & NativeMethods.ModControl) != 0 && !ContainsAny(pressedKeys, Keys.ControlKey, Keys.LControlKey, Keys.RControlKey))
+        {
+            return false;
+        }
+
+        if ((Modifiers & NativeMethods.ModShift) != 0 && !ContainsAny(pressedKeys, Keys.ShiftKey, Keys.LShiftKey, Keys.RShiftKey))
+        {
+            return false;
+        }
+
+        return ContainsEquivalentKey(pressedKeys, Key);
+    }
+
+    private static bool ContainsEquivalentKey(IReadOnlySet<Keys> pressedKeys, Keys key)
+    {
+        return key switch
+        {
+            Keys.Menu => ContainsAny(pressedKeys, Keys.Menu, Keys.LMenu, Keys.RMenu),
+            Keys.ControlKey => ContainsAny(pressedKeys, Keys.ControlKey, Keys.LControlKey, Keys.RControlKey),
+            Keys.ShiftKey => ContainsAny(pressedKeys, Keys.ShiftKey, Keys.LShiftKey, Keys.RShiftKey),
+            _ => pressedKeys.Contains(key)
+        };
+    }
+
+    private static bool ContainsAny(IReadOnlySet<Keys> pressedKeys, params Keys[] candidates)
+    {
+        foreach (var candidate in candidates)
+        {
+            if (pressedKeys.Contains(candidate))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public void WaitUntilReleased(int timeoutMilliseconds)
+    {
+        var timeoutAt = Environment.TickCount64 + timeoutMilliseconds;
+        while (Environment.TickCount64 < timeoutAt && AnyHotkeyPartDown())
+        {
+            Application.DoEvents();
+            Thread.Sleep(25);
+        }
+    }
+
+    private bool AnyHotkeyPartDown()
+    {
+        foreach (var key in keysToPoll)
+        {
+            if (key == Keys.LWin || key == Keys.RWin)
+            {
+                if (NativeMethods.IsKeyDown(Keys.LWin) || NativeMethods.IsKeyDown(Keys.RWin))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (NativeMethods.IsKeyDown(key))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
+sealed class KeyboardHook : IDisposable
+{
+    private const int WhKeyboardLl = 13;
+    private const int WmKeydown = 0x0100;
+    private const int WmKeyup = 0x0101;
+    private const int WmSyskeydown = 0x0104;
+    private const int WmSyskeyup = 0x0105;
+    private readonly SynchronizationContext context;
+    private readonly Action onPressed;
+    private readonly Action onReleased;
+    private readonly HashSet<Keys> pressedKeys = new();
+    private readonly NativeMethods.LowLevelKeyboardProc callback;
+    private Hotkey hotkey;
+    private IntPtr hookHandle;
+    private bool active;
+    private bool disposed;
+
+    public KeyboardHook(Hotkey hotkey, Action onPressed, Action onReleased)
+    {
+        this.hotkey = hotkey;
+        this.onPressed = onPressed;
+        this.onReleased = onReleased;
+        context = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        callback = HandleKeyboardEvent;
+    }
+
+    public void Start()
+    {
+        if (hookHandle != IntPtr.Zero)
+        {
+            return;
+        }
+
+        hookHandle = NativeMethods.SetWindowsHookEx(WhKeyboardLl, callback, IntPtr.Zero, 0);
+        if (hookHandle == IntPtr.Zero)
+        {
+            AppLog.Write($"SetWindowsHookEx failed; lastError={Marshal.GetLastWin32Error()}");
+        }
+    }
+
+    public void MarkActive()
+    {
+        active = true;
+    }
+
+    public void MarkInactive()
+    {
+        active = false;
+        pressedKeys.Clear();
+    }
+
+    private IntPtr HandleKeyboardEvent(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            var vkCode = Marshal.ReadInt32(lParam);
+            var key = NormalizeKey((Keys)vkCode);
+            var message = wParam.ToInt32();
+            var isDown = message is WmKeydown or WmSyskeydown;
+            var isUp = message is WmKeyup or WmSyskeyup;
+
+            if (isDown)
+            {
+                pressedKeys.Add(key);
+            }
+            else if (isUp)
+            {
+                pressedKeys.Remove(key);
+                RemoveModifierAliases(key);
+            }
+
+            var matches = hotkey.MatchesPressed(pressedKeys);
+            if (matches && !active)
+            {
+                active = true;
+                context.Post(_ => onPressed(), null);
+            }
+            else if (!matches && active)
+            {
+                active = false;
+                context.Post(_ => onReleased(), null);
+            }
+        }
+
+        return NativeMethods.CallNextHookEx(hookHandle, nCode, wParam, lParam);
+    }
+
+    private void RemoveModifierAliases(Keys key)
+    {
+        if (key is Keys.LMenu or Keys.RMenu or Keys.Menu)
+        {
+            pressedKeys.Remove(Keys.Menu);
+            pressedKeys.Remove(Keys.LMenu);
+            pressedKeys.Remove(Keys.RMenu);
+        }
+        else if (key is Keys.LControlKey or Keys.RControlKey or Keys.ControlKey)
+        {
+            pressedKeys.Remove(Keys.ControlKey);
+            pressedKeys.Remove(Keys.LControlKey);
+            pressedKeys.Remove(Keys.RControlKey);
+        }
+        else if (key is Keys.LShiftKey or Keys.RShiftKey or Keys.ShiftKey)
+        {
+            pressedKeys.Remove(Keys.ShiftKey);
+            pressedKeys.Remove(Keys.LShiftKey);
+            pressedKeys.Remove(Keys.RShiftKey);
+        }
+    }
+
+    private static Keys NormalizeKey(Keys key)
+    {
+        return key switch
+        {
+            Keys.ControlKey => Keys.ControlKey,
+            Keys.ShiftKey => Keys.ShiftKey,
+            Keys.Menu => Keys.Menu,
+            _ => key
+        };
+    }
+
+    public void Dispose()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        if (hookHandle != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWindowsHookEx(hookHandle);
+            hookHandle = IntPtr.Zero;
+        }
+
+        disposed = true;
+    }
+}
+
+sealed class HotkeyWindow : NativeWindow, IDisposable
+{
+    private const int HotkeyId = 0x505454;
+    private const int WmHotkey = 0x0312;
+    private readonly Hotkey hotkey;
+    private readonly Action onPressed;
+    private bool registered;
+    private bool disposed;
+
+    public HotkeyWindow(Hotkey hotkey, Action onPressed)
+    {
+        this.hotkey = hotkey;
+        this.onPressed = onPressed;
+        CreateHandle(new CreateParams());
+    }
+
+    public bool Register()
+    {
+        registered = NativeMethods.RegisterHotKey(Handle, HotkeyId, hotkey.Modifiers, (uint)hotkey.Key);
+        return registered;
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WmHotkey)
+        {
+            onPressed();
+        }
+
+        base.WndProc(ref m);
+    }
+
+    public void Dispose()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        if (registered)
+        {
+            NativeMethods.UnregisterHotKey(Handle, HotkeyId);
+        }
+
+        DestroyHandle();
+        disposed = true;
+    }
+}
+
+sealed class HotkeyProbe : NativeWindow, IDisposable
+{
+    private readonly int id = Random.Shared.Next(0x6000, 0x7FFF);
+    private bool registered;
+    private bool disposed;
+
+    private HotkeyProbe()
+    {
+        CreateHandle(new CreateParams());
+    }
+
+    public static bool IsAvailable(Hotkey hotkey)
+    {
+        using var probe = new HotkeyProbe();
+        probe.registered = NativeMethods.RegisterHotKey(probe.Handle, probe.id, hotkey.Modifiers, (uint)hotkey.Key);
+        return probe.registered;
+    }
+
+    public void Dispose()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        if (registered)
+        {
+            NativeMethods.UnregisterHotKey(Handle, id);
+        }
+
+        DestroyHandle();
+        disposed = true;
+    }
+}
+
+enum StatusKind
+{
+    Ready,
+    Recording,
+    Transcribing,
+    Success,
+    Error
+}
+
+sealed class FloatingStatusForm : Form
+{
+    private readonly StatusIconControl iconControl = new();
+    private readonly Label messageLabel = new();
+
+    public FloatingStatusForm()
+    {
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        TopMost = true;
+        StartPosition = FormStartPosition.Manual;
+        BackColor = Color.FromArgb(28, 31, 36);
+        ForeColor = Color.White;
+        Size = new Size(320, 90);
+        Padding = new Padding(16);
+        Opacity = 0.94;
+
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 1
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 44));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        iconControl.Dock = DockStyle.Fill;
+        messageLabel.TextAlign = ContentAlignment.MiddleLeft;
+        messageLabel.Font = new Font("Segoe UI", 11F, FontStyle.Regular);
+        messageLabel.ForeColor = Color.White;
+        messageLabel.Dock = DockStyle.Fill;
+        layout.Controls.Add(iconControl, 0, 0);
+        layout.Controls.Add(messageLabel, 1, 0);
+        Controls.Add(layout);
+    }
+
+    protected override bool ShowWithoutActivation => true;
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+            return cp;
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var path = RoundedRect(ClientRectangle, 8);
+        Region = new Region(path);
+        using var pen = new Pen(Color.FromArgb(80, 255, 255, 255));
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        e.Graphics.DrawPath(pen, path);
+    }
+
+    public void ShowMessage(string message, StatusKind kind)
+    {
+        messageLabel.Text = message;
+        iconControl.Kind = kind;
+        var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1200, 800);
+        Location = new Point(area.Right - Width - 22, area.Bottom - Height - 22);
+        if (!Visible)
+        {
+            Show();
+        }
+
+        Invalidate();
+    }
+
+    private static GraphicsPath RoundedRect(Rectangle bounds, int radius)
+    {
+        var diameter = radius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter - 1, bounds.Top, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter - 1, bounds.Bottom - diameter - 1, diameter, diameter, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - diameter - 1, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+}
+
+sealed class StatusIconControl : Control
+{
+    private StatusKind kind = StatusKind.Ready;
+
+    public StatusKind Kind
+    {
+        get => kind;
+        set
+        {
+            kind = value;
+            Invalidate();
+        }
+    }
+
+    public StatusIconControl()
+    {
+        DoubleBuffered = true;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        var size = Math.Min(32, Math.Min(Width, Height) - 4);
+        var x = (Width - size) / 2;
+        var y = (Height - size) / 2;
+        var bounds = new Rectangle(x, y, size, size);
+        var (bg, fg) = ColorsFor(kind);
+
+        using var bgBrush = new SolidBrush(bg);
+        using var fgPen = new Pen(fg, 2.4F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var fgBrush = new SolidBrush(fg);
+        e.Graphics.FillEllipse(bgBrush, bounds);
+
+        switch (kind)
+        {
+            case StatusKind.Recording:
+                DrawMic(e.Graphics, bounds, fgBrush, fgPen);
+                break;
+            case StatusKind.Transcribing:
+                DrawSpinner(e.Graphics, bounds, fgPen);
+                break;
+            case StatusKind.Success:
+                e.Graphics.DrawLines(fgPen, new[]
+                {
+                    new Point(bounds.Left + 8, bounds.Top + 17),
+                    new Point(bounds.Left + 14, bounds.Top + 23),
+                    new Point(bounds.Left + 24, bounds.Top + 10)
+                });
+                break;
+            case StatusKind.Error:
+                e.Graphics.DrawLine(fgPen, bounds.Left + 10, bounds.Top + 10, bounds.Right - 10, bounds.Bottom - 10);
+                e.Graphics.DrawLine(fgPen, bounds.Right - 10, bounds.Top + 10, bounds.Left + 10, bounds.Bottom - 10);
+                break;
+            default:
+                e.Graphics.FillEllipse(fgBrush, bounds.Left + 14, bounds.Top + 8, 4, 4);
+                e.Graphics.DrawLine(fgPen, bounds.Left + 16, bounds.Top + 15, bounds.Left + 16, bounds.Top + 24);
+                break;
+        }
+    }
+
+    private static (Color Bg, Color Fg) ColorsFor(StatusKind kind)
+    {
+        return kind switch
+        {
+            StatusKind.Recording => (Color.FromArgb(231, 76, 60), Color.White),
+            StatusKind.Transcribing => (Color.FromArgb(38, 132, 255), Color.White),
+            StatusKind.Success => (Color.FromArgb(38, 166, 91), Color.White),
+            StatusKind.Error => (Color.FromArgb(220, 53, 69), Color.White),
+            _ => (Color.FromArgb(102, 112, 133), Color.White)
+        };
+    }
+
+    private static void DrawMic(Graphics graphics, Rectangle bounds, Brush brush, Pen pen)
+    {
+        graphics.FillRoundedRectangle(brush, new Rectangle(bounds.Left + 12, bounds.Top + 7, 8, 13), 4);
+        graphics.DrawArc(pen, bounds.Left + 8, bounds.Top + 12, 16, 12, 0, 180);
+        graphics.DrawLine(pen, bounds.Left + 16, bounds.Top + 23, bounds.Left + 16, bounds.Top + 26);
+        graphics.DrawLine(pen, bounds.Left + 11, bounds.Top + 26, bounds.Left + 21, bounds.Top + 26);
+    }
+
+    private static void DrawSpinner(Graphics graphics, Rectangle bounds, Pen pen)
+    {
+        graphics.DrawArc(pen, bounds.Left + 8, bounds.Top + 8, bounds.Width - 16, bounds.Height - 16, 210, 250);
+        using var brush = new SolidBrush(pen.Color);
+        graphics.FillEllipse(brush, bounds.Right - 12, bounds.Top + 8, 4, 4);
+    }
+}
+
+static class IconFactory
+{
+    public static Icon LoadAppIcon()
+    {
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "app.ico");
+        if (File.Exists(iconPath))
+        {
+            return new Icon(iconPath);
+        }
+
+        return Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? Create();
+    }
+
+    public static Icon Create()
+    {
+        using var bitmap = new Bitmap(32, 32);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.Clear(Color.Transparent);
+        using var bg = new SolidBrush(Color.FromArgb(38, 132, 255));
+        using var fg = new SolidBrush(Color.White);
+        graphics.FillEllipse(bg, 2, 2, 28, 28);
+        graphics.FillRoundedRectangle(fg, new Rectangle(12, 7, 8, 13), 4);
+        graphics.FillRectangle(fg, 15, 18, 2, 5);
+        graphics.FillRectangle(fg, 10, 23, 12, 2);
+        return Icon.FromHandle(bitmap.GetHicon());
+    }
+}
+
+static class GraphicsExtensions
+{
+    public static void FillRoundedRectangle(this Graphics graphics, Brush brush, Rectangle bounds, int radius)
+    {
+        using var path = new GraphicsPath();
+        var diameter = radius * 2;
+        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        graphics.FillPath(brush, path);
+    }
+}
+
+static class NativeMethods
+{
+    public const uint ModAlt = 0x0001;
+    public const uint ModControl = 0x0002;
+    public const uint ModShift = 0x0004;
+    public const uint ModWin = 0x0008;
+    public const uint ModNoRepeat = 0x4000;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    public delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    public static bool IsKeyDown(Keys key) => (GetAsyncKeyState((int)key) & 0x8000) != 0;
+
+    public static bool SendCtrlV()
+    {
+        ReleaseCommonModifiers();
+        Thread.Sleep(30);
+        var inputs = new[]
+        {
+            KeyInput(Keys.LControlKey, false),
+            KeyInput(Keys.V, false),
+            KeyInput(Keys.V, true),
+            KeyInput(Keys.LControlKey, true)
+        };
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent != inputs.Length)
+        {
+            AppLog.Write($"SendInput Ctrl+V sent {sent}/{inputs.Length}; lastError={Marshal.GetLastWin32Error()}; inputSize={Marshal.SizeOf<INPUT>()}");
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void ReleaseCommonModifiers()
+    {
+        var keyUps = new[]
+        {
+            KeyInput(Keys.LWin, true),
+            KeyInput(Keys.RWin, true),
+            KeyInput(Keys.Menu, true),
+            KeyInput(Keys.LMenu, true),
+            KeyInput(Keys.RMenu, true),
+            KeyInput(Keys.ShiftKey, true),
+            KeyInput(Keys.ControlKey, true)
+        };
+        var sent = SendInput((uint)keyUps.Length, keyUps, Marshal.SizeOf<INPUT>());
+        if (sent != keyUps.Length)
+        {
+            AppLog.Write($"SendInput modifier release sent {sent}/{keyUps.Length}; lastError={Marshal.GetLastWin32Error()}; inputSize={Marshal.SizeOf<INPUT>()}");
+        }
+    }
+
+    private static INPUT KeyInput(Keys key, bool keyUp)
+    {
+        return new INPUT
+        {
+            type = 1,
+            U = new InputUnion
+            {
+                ki = new KEYBDINPUT
+                {
+                    wVk = (ushort)key,
+                    dwFlags = keyUp ? 0x0002u : 0
+                }
+            }
+        };
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)]
+        public KEYBDINPUT ki;
+
+        [FieldOffset(0)]
+        public MOUSEINPUT mi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+}
+
+static class AppLog
+{
+    private static readonly string LogPath = Path.Combine(AppContext.BaseDirectory, "echoscribe.log");
+
+    public static void Write(string message)
+    {
+        try
+        {
+            File.AppendAllText(LogPath, $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff} {message}{Environment.NewLine}");
+        }
+        catch
+        {
+            // Logging must never interfere with transcription.
+        }
+    }
+}
+
+sealed record BrowserExtensionInstallResult(string ExtensionId, string ExtensionDirectory, string NativeHostManifestPath);
+
+static class BrowserExtensionInstaller
+{
+    private const string NativeHostName = "de.echoscribe.nativehost";
+
+    public static BrowserExtensionInstallResult Register()
+    {
+        var extensionDirectory = FindExtensionDirectory();
+        var extensionId = ReadExtensionId(extensionDirectory);
+        var hostPath = FindNativeHostPath();
+        var manifestPath = Path.Combine(Path.GetDirectoryName(hostPath) ?? AppContext.BaseDirectory, $"{NativeHostName}.json");
+
+        var payload = new Dictionary<string, object>
+        {
+            ["name"] = NativeHostName,
+            ["description"] = "EchoScribe Web Summary Native Host",
+            ["path"] = hostPath,
+            ["type"] = "stdio",
+            ["allowed_origins"] = new[] { $"chrome-extension://{extensionId}/" }
+        };
+
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(manifestPath, json, Encoding.UTF8);
+
+        using var key = Registry.CurrentUser.CreateSubKey($@"Software\Google\Chrome\NativeMessagingHosts\{NativeHostName}", writable: true)
+            ?? throw new InvalidOperationException("Registry-Schlüssel für Chrome Native Messaging konnte nicht erstellt werden.");
+        key.SetValue("", manifestPath, RegistryValueKind.String);
+
+        return new BrowserExtensionInstallResult(extensionId, extensionDirectory, manifestPath);
+    }
+
+    public static string FindExtensionDirectory()
+    {
+        var candidates = CandidateRoots()
+            .SelectMany(root => new[]
+            {
+                Path.Combine(root, "chrome-extension"),
+                Path.Combine(root, "browser-extension")
+            })
+            .Where(path => File.Exists(Path.Combine(path, "manifest.json")))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return candidates.FirstOrDefault()
+            ?? throw new DirectoryNotFoundException("Der Ordner browser-extension/chrome-extension wurde nicht gefunden. Bitte zuerst EchoScribe vollständig bauen/publizieren.");
+    }
+
+    private static string FindNativeHostPath()
+    {
+        var candidates = CandidateRoots()
+            .SelectMany(root => new[]
+            {
+                Path.Combine(root, "EchoScribe.NativeHost.exe"),
+                Path.Combine(root, "native-host", "EchoScribe.NativeHost.exe"),
+                Path.Combine(root, "publish", "native-host", "EchoScribe.NativeHost.exe"),
+                Path.Combine(root, "native-host", "bin", "Release", "net8.0", "win-x64", "publish", "EchoScribe.NativeHost.exe"),
+                Path.Combine(root, "native-host", "bin", "Release", "net8.0", "EchoScribe.NativeHost.exe"),
+                Path.Combine(root, "native-host", "bin", "Debug", "net8.0", "EchoScribe.NativeHost.exe")
+            })
+            .Where(File.Exists)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return candidates.FirstOrDefault()
+            ?? throw new FileNotFoundException("EchoScribe.NativeHost.exe wurde nicht gefunden. Bitte den Native Host zuerst bauen/publizieren.");
+    }
+
+    private static IEnumerable<string> CandidateRoots()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var start in new[] { AppContext.BaseDirectory, Environment.CurrentDirectory })
+        {
+            var current = new DirectoryInfo(start);
+            while (current is not null)
+            {
+                if (seen.Add(current.FullName))
+                {
+                    yield return current.FullName;
+                }
+
+                current = current.Parent;
+            }
+        }
+    }
+
+    private static string ReadExtensionId(string extensionDirectory)
+    {
+        var manifestPath = Path.Combine(extensionDirectory, "manifest.json");
+        using var json = JsonDocument.Parse(File.ReadAllText(manifestPath));
+        if (!json.RootElement.TryGetProperty("key", out var keyElement) || keyElement.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException("browser-extension/manifest.json braucht ein 'key'-Feld, damit die Extension-ID stabil bleibt.");
+        }
+
+        var publicKey = Convert.FromBase64String(keyElement.GetString() ?? "");
+        var hash = SHA256.HashData(publicKey);
+        var id = new StringBuilder(32);
+        for (var i = 0; i < 16; i++)
+        {
+            id.Append((char)('a' + (hash[i] >> 4)));
+            id.Append((char)('a' + (hash[i] & 0x0F)));
+        }
+
+        return id.ToString();
+    }
+}
+
