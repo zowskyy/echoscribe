@@ -1,7 +1,12 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = if ((Split-Path -Leaf $scriptRoot) -eq 'scripts') {
+    Split-Path -Parent $scriptRoot
+} else {
+    $scriptRoot
+}
 $repoRoot = Split-Path -Parent (Split-Path -Parent $root)
 $source = Join-Path $repoRoot 'assets\images\logo.png'
 $out = Join-Path $root 'app.ico'

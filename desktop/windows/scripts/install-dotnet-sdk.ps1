@@ -5,7 +5,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = if ((Split-Path -Leaf $scriptRoot) -eq 'scripts') {
+    Split-Path -Parent $scriptRoot
+} else {
+    $scriptRoot
+}
 $installDir = Join-Path $root '.dotnet-sdk'
 $dotnet = Join-Path $installDir 'dotnet.exe'
 

@@ -1,10 +1,10 @@
 @echo off
 setlocal
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-dotnet-sdk.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-dotnet-sdk.ps1"
 if errorlevel 1 goto failed
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0publish-echoscribe.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\publish-echoscribe.ps1"
 if errorlevel 1 goto failed
 
 echo.

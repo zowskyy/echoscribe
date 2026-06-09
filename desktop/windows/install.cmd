@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-echoscribe.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-echoscribe.ps1" %*
 set "exit_code=%ERRORLEVEL%"
 echo.
 if "%exit_code%"=="0" (

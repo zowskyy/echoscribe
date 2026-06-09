@@ -52,19 +52,19 @@ Claude/Anthropic is implemented for text summaries only. This app does not suppo
 Install from a release package:
 
 1. Download and unzip `EchoScribe-Windows-x64.zip`.
-2. Double-click `install-echoscribe.cmd`.
+2. Double-click `install.cmd`.
 3. In `chrome://extensions`, enable developer mode and load the `chrome-extension` folder from the unzipped package.
 
 The installer runs per user and does not need administrator rights. It creates the Startup shortcut, starts `EchoScribe.exe`, registers the Native Messaging host for Chrome, Chromium, Edge, and Brave, and opens the extension folder.
 
-The installer and `register-chrome-host.ps1` do not install the Chrome extension automatically. They only register the Native Messaging host so the manually loaded extension is allowed to start the local bridge executable.
+The installer and `scripts\register-chrome-host.ps1` do not install the Chrome extension automatically. They only register the Native Messaging host so the manually loaded extension is allowed to start the local bridge executable.
 
 Build from source:
 
 If the .NET SDK is not installed globally, install the local SDK expected by the build scripts:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install-dotnet-sdk.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-dotnet-sdk.ps1
 ```
 
 For a double-click local build, run:
@@ -73,10 +73,12 @@ For a double-click local build, run:
 build-release.cmd
 ```
 
+After the build completes, double-click `install.cmd` from this folder. It installs the freshly built `publish` directory.
+
 Manual publish:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\publish-echoscribe.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-echoscribe.ps1
 ```
 
 This creates:
@@ -84,6 +86,7 @@ This creates:
 - `publish\EchoScribe.exe`
 - `publish\native-host\EchoScribe.NativeHost.exe`
 - `publish\chrome-extension\`
+- `publish\install.cmd`
 - `EchoScribe-Windows-x64.zip`
 
 Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
@@ -91,10 +94,10 @@ Release packages use `appsettings.template.json` as `publish\appsettings.json` b
 Register the Chrome Native Messaging host manually:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\register-chrome-host.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register-chrome-host.ps1
 ```
 
-For normal installs, prefer `install-echoscribe.cmd` from the published package because it also sets Startup and registers additional Chromium-based browsers.
+For normal installs, prefer `install.cmd` from the published package because it also sets Startup and registers additional Chromium-based browsers.
 
 After manual registration, load the extension yourself:
 

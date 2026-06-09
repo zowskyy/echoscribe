@@ -4,14 +4,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = if ((Split-Path -Leaf $scriptRoot) -eq 'scripts') {
+    Split-Path -Parent $scriptRoot
+} else {
+    $scriptRoot
+}
 $localDotnet = Join-Path $root '.dotnet-sdk\dotnet.exe'
 if (Test-Path -LiteralPath $localDotnet) {
     $dotnet = $localDotnet
 } else {
     $dotnetCommand = Get-Command 'dotnet' -ErrorAction SilentlyContinue
     if (-not $dotnetCommand) {
-        throw 'dotnet was not found. Run .\install-dotnet-sdk.ps1 or .\build-release.cmd first.'
+        throw 'dotnet was not found. Run .\build-release.cmd first or .\scripts\install-dotnet-sdk.ps1 manually.'
     }
     $dotnet = $dotnetCommand.Source
 }
@@ -39,9 +44,13 @@ function Assert-File {
 $publishDir = Join-Path $root 'publish'
 $nativePublishDir = Join-Path $publishDir 'native-host'
 $extensionPublishDir = Join-Path $publishDir 'chrome-extension'
+$publishScriptsDir = Join-Path $publishDir 'scripts'
 $extensionSourceDir = Join-Path (Split-Path -Parent $root) 'browser-extension'
 $packagePath = Join-Path $root 'EchoScribe-Windows-x64.zip'
 
+if (Test-Path -LiteralPath $publishDir) {
+    Remove-Item -LiteralPath $publishDir -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 New-Item -ItemType Directory -Force -Path $nativePublishDir | Out-Null
 
@@ -96,8 +105,9 @@ if ($IncludeLocalSettings) {
 }
 Copy-Item -LiteralPath $appsettingsSource -Destination (Join-Path $publishDir 'appsettings.json') -Force
 Copy-Item -LiteralPath $appsettingsTemplate -Destination (Join-Path $publishDir 'appsettings.template.json') -Force
-Copy-Item -LiteralPath (Join-Path $root 'install-echoscribe.ps1') -Destination (Join-Path $publishDir 'install-echoscribe.ps1') -Force
-Copy-Item -LiteralPath (Join-Path $root 'install-echoscribe.cmd') -Destination (Join-Path $publishDir 'install-echoscribe.cmd') -Force
+New-Item -ItemType Directory -Force -Path $publishScriptsDir | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'install.cmd') -Destination (Join-Path $publishDir 'install.cmd') -Force
+Copy-Item -LiteralPath (Join-Path $scriptRoot 'install-echoscribe.ps1') -Destination (Join-Path $publishScriptsDir 'install-echoscribe.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $publishDir 'README-Windows.md') -Force
 
 if (Test-Path -LiteralPath $packagePath) {

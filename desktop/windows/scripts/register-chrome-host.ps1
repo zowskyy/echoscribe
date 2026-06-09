@@ -1,6 +1,11 @@
 $ErrorActionPreference = 'Stop'
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root = if ((Split-Path -Leaf $scriptRoot) -eq 'scripts') {
+    Split-Path -Parent $scriptRoot
+} else {
+    $scriptRoot
+}
 $publishDir = Join-Path $root 'publish'
 $extensionDir = Join-Path $publishDir 'chrome-extension'
 $nativeHost = Join-Path $publishDir 'native-host\EchoScribe.NativeHost.exe'
@@ -13,7 +18,7 @@ if (-not (Test-Path -LiteralPath $nativeHost)) {
     $nativeHost = Join-Path $root 'native-host\bin\Release\net8.0\win-x64\publish\EchoScribe.NativeHost.exe'
 }
 if (-not (Test-Path -LiteralPath $nativeHost)) {
-    throw 'EchoScribe.NativeHost.exe not found. Run .\publish-echoscribe.ps1 first.'
+    throw 'EchoScribe.NativeHost.exe not found. Run .\build-release.cmd or .\scripts\publish-echoscribe.ps1 first.'
 }
 
 $manifestPath = Join-Path $extensionDir 'manifest.json'

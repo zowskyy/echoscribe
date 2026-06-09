@@ -6,17 +6,22 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$packageRoot = if ((Split-Path -Leaf $scriptRoot) -eq 'scripts') {
+    Split-Path -Parent $scriptRoot
+} else {
+    $scriptRoot
+}
 $nativeHostName = 'de.echoscribe.nativehost'
 
 function Resolve-PublishDirectory {
     if (
-        (Test-Path -LiteralPath (Join-Path $scriptRoot 'EchoScribe.exe') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $scriptRoot 'native-host\EchoScribe.NativeHost.exe') -PathType Leaf)
+        (Test-Path -LiteralPath (Join-Path $packageRoot 'EchoScribe.exe') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $packageRoot 'native-host\EchoScribe.NativeHost.exe') -PathType Leaf)
     ) {
-        return $scriptRoot
+        return $packageRoot
     }
 
-    $candidate = Join-Path $scriptRoot 'publish'
+    $candidate = Join-Path $packageRoot 'publish'
     if (
         (Test-Path -LiteralPath (Join-Path $candidate 'EchoScribe.exe') -PathType Leaf) -and
         (Test-Path -LiteralPath (Join-Path $candidate 'native-host\EchoScribe.NativeHost.exe') -PathType Leaf)
@@ -24,7 +29,7 @@ function Resolve-PublishDirectory {
         return $candidate
     }
 
-    throw 'EchoScribe.exe and native-host\EchoScribe.NativeHost.exe were not found. Use a published EchoScribe Windows package or run publish-echoscribe.ps1 first.'
+    throw 'EchoScribe.exe and native-host\EchoScribe.NativeHost.exe were not found. Use a published EchoScribe Windows package or run build-release.cmd first.'
 }
 
 function Assert-File {
