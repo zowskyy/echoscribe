@@ -49,15 +49,17 @@ Summary providers:
 
 Claude/Anthropic is implemented for text summaries only. This app does not support Claude speech-to-text or text-to-speech unless Anthropic ships suitable audio models and the app is extended for them.
 
-Install:
+Install from a GitHub release:
 
-1. Download and unzip `EchoScribe-Windows-x64.zip`, or use a source checkout.
+1. Download and unzip `EchoScribe-Windows-x64-<version>.zip`, or use a source checkout.
 2. Double-click `install.cmd`.
 3. Keep the default install folder or choose another one in the setup TUI.
 4. If setup asks to build EchoScribe, accept the build. The local .NET SDK is installed automatically when needed.
 5. For Chrome, Edge, Brave, or Chromium, enable developer mode on the browser's extensions page and load the installed `chrome-extension` folder shown by setup. For Firefox, use `about:debugging#/runtime/this-firefox` and load the installed `firefox-extension\manifest.json` as a temporary add-on.
 
 The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging hosts, open browser extension setup pages, and start EchoScribe after installation.
+
+Autostart is implemented as a per-user Startup shortcut named `EchoScribe.lnk`. The Native Host is not started at login; browsers start it on demand when the extension sends a summary request.
 
 The installer and the compatibility-named `scripts\register-chrome-host.ps1` helper do not install browser extensions automatically. They only register the Native Messaging hosts so manually loaded extensions are allowed to start the local bridge executable.
 
@@ -79,6 +81,14 @@ This creates:
 - `publish\install.cmd`
 - `publish\scripts\install-echoscribe.ps1`
 - `EchoScribe-Windows-x64.zip`
+
+For GitHub release naming, run from the repository root:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tooling\build_windows_release.ps1
+```
+
+This copies the ZIP to `release\echoscribe-v<version>\EchoScribe-Windows-x64-v<version>.zip`.
 
 Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
 
