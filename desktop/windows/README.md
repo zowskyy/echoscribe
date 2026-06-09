@@ -82,14 +82,6 @@ This creates:
 - `publish\scripts\install-echoscribe.ps1`
 - `EchoScribe-Windows-x64.zip`
 
-For GitHub release naming, run from the repository root:
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tooling\build_windows_release.ps1
-```
-
-This copies the ZIP to `release\echoscribe-v<version>\EchoScribe-Windows-x64-v<version>.zip`.
-
 Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
 
 Register the browser Native Messaging host manually:
