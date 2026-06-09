@@ -16,7 +16,7 @@ if (Test-Path -LiteralPath $localDotnet) {
 } else {
     $dotnetCommand = Get-Command 'dotnet' -ErrorAction SilentlyContinue
     if (-not $dotnetCommand) {
-        throw 'dotnet was not found. Run .\build-release.cmd first or .\scripts\install-dotnet-sdk.ps1 manually.'
+        throw 'dotnet was not found. Run .\install.cmd first or .\scripts\install-dotnet-sdk.ps1 manually.'
     }
     $dotnet = $dotnetCommand.Source
 }

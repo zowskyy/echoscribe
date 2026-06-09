@@ -49,36 +49,24 @@ Summary providers:
 
 Claude/Anthropic is implemented for text summaries only. This app does not support Claude speech-to-text or text-to-speech unless Anthropic ships suitable audio models and the app is extended for them.
 
-Install from a release package:
+Install:
 
-1. Download and unzip `EchoScribe-Windows-x64.zip`.
+1. Download and unzip `EchoScribe-Windows-x64.zip`, or use a source checkout.
 2. Double-click `install.cmd`.
 3. Keep the default install folder or choose another one in the setup TUI.
-4. In `chrome://extensions`, enable developer mode and load the installed `chrome-extension` folder shown by setup.
+4. If setup asks to build EchoScribe, accept the build. The local .NET SDK is installed automatically when needed.
+5. In `chrome://extensions`, enable developer mode and load the installed `chrome-extension` folder shown by setup.
 
 The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging host, open the Chrome extension setup page, and start EchoScribe after installation.
 
 The installer and `scripts\register-chrome-host.ps1` do not install the Chrome extension automatically. They only register the Native Messaging host so the manually loaded extension is allowed to start the local bridge executable.
 
-Build from source:
+From a source checkout, `install.cmd` is still the only required entry point. If `publish\EchoScribe.exe` does not exist yet, setup offers to build it automatically before installing. If a build already exists, setup offers an optional rebuild.
 
-If the .NET SDK is not installed globally, install the local SDK expected by the build scripts:
+Manual developer commands:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\install-dotnet-sdk.ps1
-```
-
-For a double-click local build, run:
-
-```text
-build-release.cmd
-```
-
-After the build completes, double-click `install.cmd` from this folder. It installs the freshly built `publish` directory.
-
-Manual publish:
-
-```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\publish-echoscribe.ps1
 ```
 

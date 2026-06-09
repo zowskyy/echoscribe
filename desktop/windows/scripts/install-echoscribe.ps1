@@ -4,6 +4,8 @@ param(
     [switch]$NoBrowserExtension,
     [switch]$NoStart,
     [switch]$NoOpenBrowser,
+    [switch]$NoBuild,
+    [switch]$ForceBuild,
     [switch]$NonInteractive
 )
 
@@ -99,23 +101,99 @@ function Test-SamePath {
     return [string]::Equals($leftFull, $rightFull, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-PackageDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return (
+        (Test-Path -LiteralPath (Join-Path $Path 'EchoScribe.exe') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Path 'native-host\EchoScribe.NativeHost.exe') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $Path 'chrome-extension\manifest.json') -PathType Leaf)
+    )
+}
+
+function Test-SourceDirectory {
+    return (
+        (Test-Path -LiteralPath (Join-Path $packageRoot 'EchoScribe.Windows.csproj') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $packageRoot 'native-host\EchoScribe.NativeHost.csproj') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $scriptRoot 'install-dotnet-sdk.ps1') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $scriptRoot 'publish-echoscribe.ps1') -PathType Leaf)
+    )
+}
+
+function Invoke-CheckedScript {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [string[]]$Arguments = @()
+    )
+
+    $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $Path @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    foreach ($line in $output) {
+        Write-Host $line
+    }
+    if ($exitCode -ne 0) {
+        throw "Command failed with exit code ${exitCode}: $Path $($Arguments -join ' ')"
+    }
+}
+
+function Build-Package {
+    Write-Host ''
+    Write-Host 'Building EchoScribe Windows package...'
+    Invoke-CheckedScript -Path (Join-Path $scriptRoot 'install-dotnet-sdk.ps1')
+    Invoke-CheckedScript -Path (Join-Path $scriptRoot 'publish-echoscribe.ps1')
+}
+
 function Resolve-PublishDirectory {
-    if (
-        (Test-Path -LiteralPath (Join-Path $packageRoot 'EchoScribe.exe') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $packageRoot 'native-host\EchoScribe.NativeHost.exe') -PathType Leaf)
-    ) {
+    if (Test-PackageDirectory -Path $packageRoot) {
         return $packageRoot
     }
 
     $candidate = Join-Path $packageRoot 'publish'
-    if (
-        (Test-Path -LiteralPath (Join-Path $candidate 'EchoScribe.exe') -PathType Leaf) -and
-        (Test-Path -LiteralPath (Join-Path $candidate 'native-host\EchoScribe.NativeHost.exe') -PathType Leaf)
-    ) {
+    if (Test-PackageDirectory -Path $candidate) {
         return $candidate
     }
 
-    throw 'EchoScribe.exe and native-host\EchoScribe.NativeHost.exe were not found. Use a published EchoScribe Windows package or run build-release.cmd first.'
+    throw 'EchoScribe package files were not found. Run install.cmd from a source checkout or a published EchoScribe Windows package.'
+}
+
+function Resolve-Or-BuildPackage {
+    if (Test-PackageDirectory -Path $packageRoot) {
+        return $packageRoot
+    }
+
+    $candidate = Join-Path $packageRoot 'publish'
+    $hasPublish = Test-PackageDirectory -Path $candidate
+    $hasSource = Test-SourceDirectory
+
+    if ($ForceBuild -and $NoBuild) {
+        throw 'ForceBuild and NoBuild cannot be used together.'
+    }
+
+    if ($hasSource -and -not $NoBuild) {
+        $shouldBuild = $ForceBuild
+        if (-not $shouldBuild) {
+            if (-not $hasPublish) {
+                $shouldBuild = Read-SetupYesNo -Prompt 'No built package was found. Build EchoScribe now?' -DefaultValue $true
+            } else {
+                $shouldBuild = Read-SetupYesNo -Prompt 'A built package already exists. Rebuild before installing?' -DefaultValue $false
+            }
+        }
+
+        if ($shouldBuild) {
+            Build-Package
+            $hasPublish = Test-PackageDirectory -Path $candidate
+        }
+    }
+
+    if ($hasPublish) {
+        return $candidate
+    }
+
+    if ($NoBuild) {
+        throw 'No built package was found and build was disabled.'
+    }
+
+    throw 'No built package was found. Run install.cmd from a source checkout or a published EchoScribe Windows package.'
 }
 
 function Assert-File {
@@ -258,7 +336,6 @@ function Remove-Shortcut {
     }
 }
 
-$publishDir = Resolve-PublishDirectory
 $targetDir = Resolve-FullPath ($(if ($TargetDirectory) { $TargetDirectory } else { $defaultTargetDirectory }))
 $enableAutostart = -not $NoAutostart
 $enableBrowserExtension = -not $NoBrowserExtension
@@ -266,7 +343,10 @@ $startAfterInstall = -not $NoStart
 $openBrowserSetup = (-not $NoOpenBrowser) -and $enableBrowserExtension
 
 Write-Header
-Write-Step 1 7 'Checking package'
+Write-Step 1 8 'Preparing package'
+$publishDir = Resolve-Or-BuildPackage
+
+Write-Step 2 8 'Checking package'
 Assert-File (Join-Path $publishDir 'EchoScribe.exe')
 Assert-File (Join-Path $publishDir 'native-host\EchoScribe.NativeHost.exe')
 Assert-Directory (Join-Path $publishDir 'chrome-extension')
@@ -298,10 +378,10 @@ if (-not $NonInteractive) {
     }
 }
 
-Write-Step 2 7 'Stopping running EchoScribe processes'
+Write-Step 3 8 'Stopping running EchoScribe processes'
 Stop-RunningEchoScribe
 
-Write-Step 3 7 "Copying files to $targetDir"
+Write-Step 4 8 "Copying files to $targetDir"
 Copy-PackageToTarget -Source $publishDir -Target $targetDir
 
 $appExe = Join-Path $targetDir 'EchoScribe.exe'
@@ -313,7 +393,7 @@ Assert-File $nativeHostExe
 Assert-Directory $extensionDir
 Assert-File $manifestPath
 
-Write-Step 4 7 'Registering browser native host'
+Write-Step 5 8 'Registering browser native host'
 $browserRegistration = $null
 if ($enableBrowserExtension) {
     $browserRegistration = Register-NativeHost -NativeHostExe $nativeHostExe -ExtensionManifestPath $manifestPath
@@ -321,7 +401,7 @@ if ($enableBrowserExtension) {
     Write-Host 'Browser native host registration skipped.'
 }
 
-Write-Step 5 7 'Creating shortcuts'
+Write-Step 6 8 'Creating shortcuts'
 $programsDir = [Environment]::GetFolderPath('Programs')
 $startMenuShortcut = Join-Path $programsDir 'EchoScribe.lnk'
 New-Shortcut -Path $startMenuShortcut -Target $appExe -WorkingDirectory $targetDir
@@ -334,7 +414,7 @@ if ($enableAutostart) {
     Remove-Shortcut -Path $startupShortcut
 }
 
-Write-Step 6 7 'Opening optional setup pages'
+Write-Step 7 8 'Opening optional setup pages'
 if ($openBrowserSetup) {
     Start-Process $extensionDir
     Start-Process 'chrome://extensions' -ErrorAction SilentlyContinue
@@ -343,7 +423,7 @@ if ($startAfterInstall) {
     Start-Process -FilePath $appExe -WorkingDirectory $targetDir
 }
 
-Write-Step 7 7 'Setup complete'
+Write-Step 8 8 'Setup complete'
 Write-Progress -Activity 'Installing EchoScribe' -Completed
 
 $result = [ordered]@{

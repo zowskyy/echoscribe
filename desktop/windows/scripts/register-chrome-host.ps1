@@ -18,7 +18,7 @@ if (-not (Test-Path -LiteralPath $nativeHost)) {
     $nativeHost = Join-Path $root 'native-host\bin\Release\net8.0\win-x64\publish\EchoScribe.NativeHost.exe'
 }
 if (-not (Test-Path -LiteralPath $nativeHost)) {
-    throw 'EchoScribe.NativeHost.exe not found. Run .\build-release.cmd or .\scripts\publish-echoscribe.ps1 first.'
+    throw 'EchoScribe.NativeHost.exe not found. Run .\install.cmd or .\scripts\publish-echoscribe.ps1 first.'
 }
 
 $manifestPath = Join-Path $extensionDir 'manifest.json'
