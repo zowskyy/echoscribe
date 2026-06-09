@@ -1,5 +1,6 @@
 @echo off
 setlocal
+title EchoScribe Setup
 
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-echoscribe.ps1" %*
 set "exit_code=%ERRORLEVEL%"

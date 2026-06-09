@@ -11,6 +11,8 @@ echo.
 echo EchoScribe Windows package created.
 echo %~dp0EchoScribe-Windows-x64.zip
 echo.
+echo Next: run install.cmd to open the guided installer.
+echo.
 pause
 exit /b 0
 

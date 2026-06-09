@@ -53,9 +53,10 @@ Install from a release package:
 
 1. Download and unzip `EchoScribe-Windows-x64.zip`.
 2. Double-click `install.cmd`.
-3. In `chrome://extensions`, enable developer mode and load the `chrome-extension` folder from the unzipped package.
+3. Keep the default install folder or choose another one in the setup TUI.
+4. In `chrome://extensions`, enable developer mode and load the installed `chrome-extension` folder shown by setup.
 
-The installer runs per user and does not need administrator rights. It creates the Startup shortcut, starts `EchoScribe.exe`, registers the Native Messaging host for Chrome, Chromium, Edge, and Brave, and opens the extension folder.
+The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging host, open the Chrome extension setup page, and start EchoScribe after installation.
 
 The installer and `scripts\register-chrome-host.ps1` do not install the Chrome extension automatically. They only register the Native Messaging host so the manually loaded extension is allowed to start the local bridge executable.
 
@@ -87,6 +88,7 @@ This creates:
 - `publish\native-host\EchoScribe.NativeHost.exe`
 - `publish\chrome-extension\`
 - `publish\install.cmd`
+- `publish\scripts\install-echoscribe.ps1`
 - `EchoScribe-Windows-x64.zip`
 
 Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
@@ -104,4 +106,4 @@ After manual registration, load the extension yourself:
 1. Open `chrome://extensions`.
 2. Enable developer mode.
 3. Click `Load unpacked`.
-4. Select `publish\chrome-extension`.
+4. Select the installed `chrome-extension` folder, for example `%LOCALAPPDATA%\EchoScribe\chrome-extension`.
