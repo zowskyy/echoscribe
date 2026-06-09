@@ -13,29 +13,7 @@ static class Program
     {
         try
         {
-            if (args.Contains("--self-test-config", StringComparer.OrdinalIgnoreCase))
-            {
-                WriteJson(await NativeHostApp.DescribeConfigAsync());
-                return 0;
-            }
-
-            var testIndex = Array.FindIndex(args, a => a.Equals("--test-summary", StringComparison.OrdinalIgnoreCase));
-            if (testIndex >= 0)
-            {
-                var input = testIndex + 1 < args.Length ? args[testIndex + 1] : "";
-                var provider = ReadArgValue(args, "--provider");
-                var response = await NativeHostApp.SummarizeAsync(new SummaryRequest
-                {
-                    Type = "summarize",
-                    Url = LooksLikeUrl(input) ? input : "",
-                    Text = LooksLikeUrl(input) ? "" : input,
-                    Title = "EchoScribe API test",
-                    Provider = provider
-                });
-                WriteJson(response);
-                return response.Ok ? 0 : 1;
-            }
-
+            _ = args;
             var request = await NativeMessaging.ReadAsync(Console.OpenStandardInput());
             var responseObject = await NativeHostApp.HandleAsync(request);
             await NativeMessaging.WriteAsync(Console.OpenStandardOutput(), responseObject);
@@ -44,39 +22,9 @@ static class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine(ex);
-            if (args.Length > 0)
-            {
-                WriteJson(new SummaryResponse(false, "", "", "", ex.Message));
-                return 1;
-            }
-
             await NativeMessaging.WriteAsync(Console.OpenStandardOutput(), new SummaryResponse(false, "", "", "", ex.Message));
             return 1;
         }
-    }
-
-    private static string? ReadArgValue(string[] args, string name)
-    {
-        for (var i = 0; i < args.Length - 1; i++)
-        {
-            if (args[i].Equals(name, StringComparison.OrdinalIgnoreCase))
-            {
-                return args[i + 1];
-            }
-        }
-
-        return null;
-    }
-
-    private static bool LooksLikeUrl(string value)
-    {
-        return Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeFile);
-    }
-
-    private static void WriteJson(object value)
-    {
-        Console.WriteLine(JsonSerializer.Serialize(value, NativeHostApp.JsonOptions));
     }
 }
 
@@ -144,24 +92,6 @@ static class NativeHostApp
         {
             return new SummaryResponse(false, "", "", "", ex.Message);
         }
-    }
-
-    public static Task<object> DescribeConfigAsync()
-    {
-        var config = LazyConfig.Load();
-        var providers = LazyConfig.SummaryProviders.Select(provider => new
-        {
-            provider,
-            hasKey = config.HasApiKey(provider),
-            model = config.SummaryModelFor(provider)
-        }).ToArray();
-
-        return Task.FromResult<object>(new
-        {
-            configPath = config.ConfigPath,
-            summaryProvider = config.SummaryProvider,
-            providers
-        });
     }
 
     private static async Task<string> BuildSourceTextAsync(SummaryRequest request, LazyConfig config)
