@@ -15,6 +15,15 @@ Browser summary flow:
 - Chrome sends the content to `EchoScribe.NativeHost.exe` through Native Messaging.
 - The native host calls the configured provider and returns the summary.
 - API keys stay local in `appsettings.json`; they are not stored in the extension.
+- `EchoScribe.NativeHost.exe` is not a service and does not run at Windows startup. Chrome starts it only when the extension sends a Native Messaging request.
+
+Native Messaging flow:
+
+1. The extension calls `chrome.runtime.sendNativeMessage("de.echoscribe.nativehost", payload)`.
+2. Chrome reads `HKCU\Software\Google\Chrome\NativeMessagingHosts\de.echoscribe.nativehost` or the matching registry key for another Chromium browser.
+3. That registry value points to `native-host\de.echoscribe.nativehost.json`.
+4. The manifest points to `native-host\EchoScribe.NativeHost.exe`.
+5. Chrome starts the EXE for the request and communicates with it through stdin/stdout.
 
 Configuration lives in `appsettings.json` next to the executable. The project can also import provider keys from `*.env` files in the project root.
 
@@ -40,16 +49,56 @@ Summary providers:
 
 Claude/Anthropic is implemented for text summaries only. This app does not support Claude speech-to-text or text-to-speech unless Anthropic ships suitable audio models and the app is extended for them.
 
-Build and publish:
+Install from a release package:
+
+1. Download and unzip `EchoScribe-Windows-x64.zip`.
+2. Double-click `install-echoscribe.cmd`.
+3. In `chrome://extensions`, enable developer mode and load the `chrome-extension` folder from the unzipped package.
+
+The installer runs per user and does not need administrator rights. It creates the Startup shortcut, starts `EchoScribe.exe`, registers the Native Messaging host for Chrome, Chromium, Edge, and Brave, and opens the extension folder.
+
+The installer and `register-chrome-host.ps1` do not install the Chrome extension automatically. They only register the Native Messaging host so the manually loaded extension is allowed to start the local bridge executable.
+
+Build from source:
+
+If the .NET SDK is not installed globally, install the local SDK expected by the build scripts:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install-dotnet-sdk.ps1
+```
+
+For a double-click local build, run:
+
+```text
+build-release.cmd
+```
+
+Manual publish:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\publish-echoscribe.ps1
 ```
 
-Register the Chrome Native Messaging host and open the unpacked extension folder:
+This creates:
+
+- `publish\EchoScribe.exe`
+- `publish\native-host\EchoScribe.NativeHost.exe`
+- `publish\chrome-extension\`
+- `EchoScribe-Windows-x64.zip`
+
+Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
+
+Register the Chrome Native Messaging host manually:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\register-chrome-host.ps1
 ```
 
-Then open `chrome://extensions`, enable developer mode, and load `publish\chrome-extension` as an unpacked extension.
+For normal installs, prefer `install-echoscribe.cmd` from the published package because it also sets Startup and registers additional Chromium-based browsers.
+
+After manual registration, load the extension yourself:
+
+1. Open `chrome://extensions`.
+2. Enable developer mode.
+3. Click `Load unpacked`.
+4. Select `publish\chrome-extension`.

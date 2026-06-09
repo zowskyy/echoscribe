@@ -19,7 +19,7 @@ static class Program
         using var instanceMutex = new Mutex(true, @"Local\EchoScribe.SingleInstance", out var isFirstInstance);
         if (!isFirstInstance)
         {
-            MessageBox.Show("EchoScribe läuft bereits.", "EchoScribe", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            MessageBox.Show("EchoScribe is already running.", "EchoScribe", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
@@ -72,7 +72,7 @@ sealed class TrayAppContext : ApplicationContext
 
         if (!hotkeyWindow.Register())
         {
-            ShowTransient($"Hotkey belegt: {config.Hotkey.Display}", StatusKind.Error, 5000);
+            ShowTransient($"Hotkey is already in use: {config.Hotkey.Display}", StatusKind.Error, 5000);
         }
         else
         {
@@ -111,28 +111,28 @@ sealed class TrayAppContext : ApplicationContext
         }
 
         menu.Items.Add(summaryProviderMenu);
-        var billingMenu = new ToolStripMenuItem("Guthaben / Nutzung");
-        billingMenu.DropDownItems.Add("Aktuellen Provider prüfen", null, async (_, _) => await ShowBillingInfoAsync());
+        var billingMenu = new ToolStripMenuItem("Billing / Usage");
+        billingMenu.DropDownItems.Add("Check current provider", null, async (_, _) => await ShowBillingInfoAsync());
         billingMenu.DropDownItems.Add(new ToolStripSeparator());
-        billingMenu.DropDownItems.Add("OpenAI Usage öffnen", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/usage"));
-        billingMenu.DropDownItems.Add("OpenAI Billing Overview öffnen", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/billing/overview"));
-        billingMenu.DropDownItems.Add("ElevenLabs Subscription öffnen", null, (_, _) => OpenUrl("https://elevenlabs.io/app/subscription"));
-        billingMenu.DropDownItems.Add("Gemini Usage & Billing öffnen", null, (_, _) => OpenUrl("https://aistudio.google.com/usage"));
-        billingMenu.DropDownItems.Add("xAI Billing öffnen", null, (_, _) => OpenUrl("https://console.x.ai/team/default/billing"));
+        billingMenu.DropDownItems.Add("Open OpenAI Usage", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/usage"));
+        billingMenu.DropDownItems.Add("Open OpenAI Billing Overview", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/billing/overview"));
+        billingMenu.DropDownItems.Add("Open ElevenLabs Subscription", null, (_, _) => OpenUrl("https://elevenlabs.io/app/subscription"));
+        billingMenu.DropDownItems.Add("Open Gemini Usage & Billing", null, (_, _) => OpenUrl("https://aistudio.google.com/usage"));
+        billingMenu.DropDownItems.Add("Open xAI Billing", null, (_, _) => OpenUrl("https://console.x.ai/team/default/billing"));
         menu.Items.Add(billingMenu);
-        var browserMenu = new ToolStripMenuItem("Browser-Erweiterung");
-        browserMenu.DropDownItems.Add("Chrome Plugin installieren / registrieren", null, (_, _) => InstallBrowserExtension());
-        browserMenu.DropDownItems.Add("Extension-Ordner öffnen", null, (_, _) => OpenBrowserExtensionFolder());
-        browserMenu.DropDownItems.Add("chrome://extensions öffnen", null, (_, _) => OpenUrl("chrome://extensions"));
+        var browserMenu = new ToolStripMenuItem("Browser Extension");
+        browserMenu.DropDownItems.Add("Register Chrome Native Host", null, (_, _) => InstallBrowserExtension());
+        browserMenu.DropDownItems.Add("Open extension folder", null, (_, _) => OpenBrowserExtensionFolder());
+        browserMenu.DropDownItems.Add("Open chrome://extensions", null, (_, _) => OpenUrl("chrome://extensions"));
         menu.Items.Add(browserMenu);
-        menu.Items.Add("Einstellungen...", null, (_, _) => OpenSettings());
-        menu.Items.Add("Config öffnen", null, (_, _) => Process.Start(new ProcessStartInfo
+        menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
+        menu.Items.Add("Open config", null, (_, _) => Process.Start(new ProcessStartInfo
         {
             FileName = AppConfig.ConfigPath,
             UseShellExecute = true
         }));
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Beenden", null, (_, _) => ExitThread());
+        menu.Items.Add("Quit", null, (_, _) => ExitThread());
         return menu;
     }
 
@@ -142,8 +142,8 @@ sealed class TrayAppContext : ApplicationContext
         {
             var result = BrowserExtensionInstaller.Register();
             MessageBox.Show(
-                $"Native Host registriert.\n\nExtension-ID:\n{result.ExtensionId}\n\nExtension-Ordner:\n{result.ExtensionDirectory}\n\nChrome öffnet jetzt chrome://extensions. Dort Entwicklermodus aktivieren und diesen Ordner per \"Entpackte Erweiterung laden\" auswählen.",
-                "EchoScribe Browser-Erweiterung",
+                $"Native host registered.\n\nExtension ID:\n{result.ExtensionId}\n\nExtension folder:\n{result.ExtensionDirectory}\n\nChrome will open chrome://extensions. Enable developer mode there and select this folder with \"Load unpacked\".",
+                "EchoScribe Browser Extension",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             OpenUrl("chrome://extensions");
@@ -157,7 +157,7 @@ sealed class TrayAppContext : ApplicationContext
         {
             MessageBox.Show(
                 ex.Message,
-                "Browser-Erweiterung konnte nicht registriert werden",
+                "Browser extension could not be registered",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
@@ -197,7 +197,7 @@ sealed class TrayAppContext : ApplicationContext
         var nextConfig = current.WithProvider(provider, apiKey);
         nextConfig.Save();
         ApplyConfig(nextConfig);
-        ShowTransient($"STT-Provider gewechselt\n{provider}", StatusKind.Success, 2400);
+        ShowTransient($"STT provider changed\n{provider}", StatusKind.Success, 2400);
     }
 
     private void SwitchSummaryProvider(string provider)
@@ -224,13 +224,13 @@ sealed class TrayAppContext : ApplicationContext
         var nextConfig = current.WithSummaryProvider(provider, apiKey);
         nextConfig.Save();
         ApplyConfig(nextConfig);
-        ShowTransient($"Summary-Provider gewechselt\n{provider}", StatusKind.Success, 2400);
+        ShowTransient($"Summary provider changed\n{provider}", StatusKind.Success, 2400);
     }
 
     private void ShowStartupMessage()
     {
         config = AppConfig.Load();
-        ShowTransient($"EchoScribe bereit\nHotkey: {config.Hotkey.Display}\nSTT: {config.Provider}\nSummary: {config.SummaryProvider}", StatusKind.Ready, 4200);
+        ShowTransient($"EchoScribe ready\nHotkey: {config.Hotkey.Display}\nSTT: {config.Provider}\nSummary: {config.SummaryProvider}", StatusKind.Ready, 4200);
     }
 
     private void OpenSettings()
@@ -245,7 +245,7 @@ sealed class TrayAppContext : ApplicationContext
         }
 
         ApplyConfig(form.Config);
-        ShowTransient("Einstellungen gespeichert", StatusKind.Success, 2200);
+        ShowTransient("Settings saved", StatusKind.Success, 2200);
     }
 
     private void ApplyConfig(AppConfig nextConfig)
@@ -260,7 +260,7 @@ sealed class TrayAppContext : ApplicationContext
 
         if (!hotkeyWindow.Register())
         {
-            ShowTransient($"Hotkey belegt: {config.Hotkey.Display}", StatusKind.Error, 5000);
+            ShowTransient($"Hotkey is already in use: {config.Hotkey.Display}", StatusKind.Error, 5000);
         }
         else
         {
@@ -274,7 +274,7 @@ sealed class TrayAppContext : ApplicationContext
     {
         config = AppConfig.Load();
         billingClient.UpdateConfig(config);
-        ShowTransient("Guthaben wird geprüft", StatusKind.Transcribing, 1800);
+        ShowTransient("Checking usage", StatusKind.Transcribing, 1800);
 
         try
         {
@@ -284,7 +284,7 @@ sealed class TrayAppContext : ApplicationContext
                 OpenUrl(result.OpenUrl);
             }
 
-            MessageBox.Show(result.Message, "Guthaben / Nutzung", MessageBoxButtons.OK, result.IsError ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
+            MessageBox.Show(result.Message, "Billing / Usage", MessageBoxButtons.OK, result.IsError ? MessageBoxIcon.Warning : MessageBoxIcon.Information);
         }
         catch (Exception ex)
         {
@@ -295,7 +295,7 @@ sealed class TrayAppContext : ApplicationContext
                 return;
             }
 
-            MessageBox.Show($"[ECHOSCRIBE ERROR] {ex.Message}", "Guthaben / Nutzung", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show($"[ECHOSCRIBE ERROR] {ex.Message}", "Billing / Usage", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -325,8 +325,8 @@ sealed class TrayAppContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            PutTextIntoClipboardAndPaste($"[ECHOSCRIBE ERROR] Recording konnte nicht starten: {ex.Message}", paste: false);
-            ShowTransient("Recording-Fehler\nDetails in Zwischenablage", StatusKind.Error, 4500);
+            PutTextIntoClipboardAndPaste($"[ECHOSCRIBE ERROR] Recording could not start: {ex.Message}", paste: false);
+            ShowTransient("Recording error\nDetails copied to clipboard", StatusKind.Error, 4500);
         }
     }
 
@@ -348,24 +348,24 @@ sealed class TrayAppContext : ApplicationContext
             var wavPath = recorder.StopToTempWav();
             if (new FileInfo(wavPath).Length < 1024)
             {
-                throw new InvalidOperationException("Aufnahme war zu kurz oder leer.");
+                throw new InvalidOperationException("Recording was too short or empty.");
             }
 
             var text = await transcriptionClient.TranscribeAsync(wavPath);
             if (string.IsNullOrWhiteSpace(text))
             {
-                text = "[ECHOSCRIBE ERROR] API hat keinen Text zurückgegeben.";
+                text = "[ECHOSCRIBE ERROR] API returned no text.";
             }
 
             PutTextIntoClipboardAndPaste(text.Trim(), paste: true);
-            ShowTransient("Text eingefügt", 1600);
+            ShowTransient("Text pasted", 1600);
             TryDelete(wavPath);
         }
         catch (Exception ex)
         {
             var errorText = $"[ECHOSCRIBE ERROR] {ex.Message}";
             PutTextIntoClipboardAndPaste(errorText, paste: true);
-            ShowTransient("Fehler\nDetails in Zwischenablage", 4500);
+            ShowTransient("Error\nDetails copied to clipboard", 4500);
         }
         finally
         {
@@ -399,12 +399,12 @@ sealed class TrayAppContext : ApplicationContext
 
     private void ShowTransient(string message, int milliseconds)
     {
-        var kind = message.StartsWith("Fehler", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("Fehler", StringComparison.OrdinalIgnoreCase) ||
-            message.Contains("belegt", StringComparison.OrdinalIgnoreCase)
+        var kind = message.StartsWith("Error", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("already in use", StringComparison.OrdinalIgnoreCase)
                 ? StatusKind.Error
                 : message.StartsWith("Text", StringComparison.OrdinalIgnoreCase) ||
-                    message.Contains("gespeichert", StringComparison.OrdinalIgnoreCase)
+                    message.Contains("saved", StringComparison.OrdinalIgnoreCase)
                         ? StatusKind.Success
                         : StatusKind.Ready;
         ShowTransient(message, kind, milliseconds);
@@ -522,9 +522,9 @@ sealed class TranscriptionClient(AppConfig config)
             "openai" => await TranscribeOpenAiAsync(wavPath),
             "elevenlabs" => await TranscribeElevenLabsAsync(wavPath),
             "gemini" => await TranscribeGeminiAsync(wavPath),
-            "anthropic" => throw new InvalidOperationException("Claude/Anthropic ist für Web-Zusammenfassungen verfügbar, unterstützt in EchoScribe aber kein Speech-to-Text oder Text-to-Speech."),
+            "anthropic" => throw new InvalidOperationException("Claude/Anthropic is available for web summaries, but EchoScribe does not support it for speech-to-text or text-to-speech."),
             "xai" => await TranscribeXaiAsync(wavPath),
-            _ => throw new InvalidOperationException($"Unbekannter Provider '{config.Provider}'.")
+            _ => throw new InvalidOperationException($"Unknown provider '{config.Provider}'.")
         };
     }
 
@@ -591,7 +591,7 @@ sealed class TranscriptionClient(AppConfig config)
 
         if (!startResponse.Headers.TryGetValues("X-Goog-Upload-URL", out var uploadUrls))
         {
-            throw new InvalidOperationException("Gemini Upload-URL fehlt in der API-Antwort.");
+            throw new InvalidOperationException("Gemini upload URL is missing from the API response.");
         }
 
         using var upload = new HttpRequestMessage(HttpMethod.Post, uploadUrls.First());
@@ -604,7 +604,7 @@ sealed class TranscriptionClient(AppConfig config)
         EnsureSuccess(uploadResponse, uploadBody);
         using var uploadedJson = JsonDocument.Parse(uploadBody);
         var file = uploadedJson.RootElement.GetProperty("file");
-        var uri = file.GetProperty("uri").GetString() ?? throw new InvalidOperationException("Gemini File-URI fehlt.");
+        var uri = file.GetProperty("uri").GetString() ?? throw new InvalidOperationException("Gemini file URI is missing.");
         var mimeType = file.TryGetProperty("mimeType", out var mt) ? mt.GetString() ?? "audio/wav" : "audio/wav";
 
         var generateBody = JsonSerializer.Serialize(new
@@ -660,7 +660,7 @@ sealed class TranscriptionClient(AppConfig config)
         }
 
         var detail = body.Length > 900 ? body[..900] : body;
-        throw new InvalidOperationException($"API-Fehler {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
+        throw new InvalidOperationException($"API error {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
     }
     private static string JsonText(string body, string property)
     {
@@ -687,12 +687,12 @@ sealed class BillingClient(AppConfig config)
             "elevenlabs" => GetElevenLabsSummaryAsync(),
             "openai" => GetOpenAiSummaryAsync(),
             "gemini" => Task.FromResult(new BillingSummary(
-                "Gemini verwaltet Guthaben und Abrechnung über Google Cloud Billing. Ich öffne die Usage-&-Billing-Seite; eine einfache API-Key-Guthabenabfrage gibt es dafür nicht.",
+                "Gemini usage and billing are managed through Google Cloud Billing. EchoScribe will open the usage and billing page; there is no simple API-key balance endpoint for this.",
                 "https://aistudio.google.com/usage")),
             "xai" => Task.FromResult(new BillingSummary(
-                "xAI zeigt Prepaid Credits und Usage in der Console. Ein offizieller Guthaben-Endpunkt ist in der REST-API nicht dokumentiert. Ich öffne die Billing-Seite.",
+                "xAI shows prepaid credits and usage in the console. An official balance endpoint is not documented in the REST API. EchoScribe will open the billing page.",
                 "https://console.x.ai/team/default/billing")),
-            _ => Task.FromResult(new BillingSummary($"Unbekannter Provider '{config.Provider}'.", null, true))
+            _ => Task.FromResult(new BillingSummary($"Unknown provider '{config.Provider}'.", null, true))
         };
     }
 
@@ -708,8 +708,8 @@ sealed class BillingClient(AppConfig config)
 
         using var json = JsonDocument.Parse(body);
         var root = json.RootElement;
-        var tier = ReadString(root, "tier", "unbekannt");
-        var status = ReadString(root, "status", "unbekannt");
+        var tier = ReadString(root, "tier", "unknown");
+        var status = ReadString(root, "status", "unknown");
         var used = ReadLong(root, "character_count");
         var limit = ReadLong(root, "character_limit");
         var resetUnix = ReadLong(root, "next_character_count_reset_unix");
@@ -729,16 +729,16 @@ sealed class BillingClient(AppConfig config)
         var remaining = limit > 0 ? Math.Max(0, limit - used) : 0;
         var reset = resetUnix > 0
             ? DateTimeOffset.FromUnixTimeSeconds(resetUnix).LocalDateTime.ToString("dd.MM.yyyy HH:mm", CultureInfo.CurrentCulture)
-            : "unbekannt";
+            : "unknown";
         var percent = limit > 0 ? used / (double)limit : 0;
 
         return new BillingSummary(
             $"ElevenLabs{Environment.NewLine}" +
             $"Plan: {tier} ({status}){Environment.NewLine}" +
-            $"Verbraucht: {used:N0} / {limit:N0} Credits/Zeichen ({percent:P0}){Environment.NewLine}" +
-            $"Rest: {remaining:N0}{Environment.NewLine}" +
+            $"Used: {used:N0} / {limit:N0} credits/characters ({percent:P0}){Environment.NewLine}" +
+            $"Remaining: {remaining:N0}{Environment.NewLine}" +
             $"Reset: {reset}" +
-            (string.IsNullOrWhiteSpace(currency) ? "" : $"{Environment.NewLine}Währung: {currency}") +
+            (string.IsNullOrWhiteSpace(currency) ? "" : $"{Environment.NewLine}Currency: {currency}") +
             overage);
     }
 
@@ -785,8 +785,8 @@ sealed class BillingClient(AppConfig config)
 
         return new BillingSummary(
             $"OpenAI{Environment.NewLine}" +
-            $"Kosten seit {monthStart.LocalDateTime:dd.MM.yyyy}: {total:N4} {currency}{Environment.NewLine}" +
-            $"Hinweis: Das ist die offizielle Costs-API, nicht dein verbleibendes Prepaid-Guthaben. Das Guthaben siehst du in der Billing Overview.");
+            $"Cost since {monthStart.LocalDateTime:yyyy-MM-dd}: {total:N4} {currency}{Environment.NewLine}" +
+            $"Note: This is the official Costs API, not your remaining prepaid balance. The remaining balance is shown in the Billing Overview.");
     }
 
     private static void EnsureSuccess(HttpResponseMessage response, string body)
@@ -797,7 +797,7 @@ sealed class BillingClient(AppConfig config)
         }
 
         var detail = body.Length > 900 ? body[..900] : body;
-        throw new InvalidOperationException($"API-Fehler {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
+        throw new InvalidOperationException($"API error {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
     }
 
     private static void EnsureOpenAiCostsSuccess(HttpResponseMessage response, string body)
@@ -810,9 +810,9 @@ sealed class BillingClient(AppConfig config)
         if ((int)response.StatusCode == 403 && body.Contains("api.usage.read", StringComparison.OrdinalIgnoreCase))
         {
             throw new OpenAiUsagePermissionException(
-                "OpenAI hat die Kostenabfrage abgelehnt: Für Usage/Costs brauchst du einen OpenAI Admin API Key mit api.usage.read. " +
-                "Ein normaler Projekt- oder Service-Account-Key reicht dafür nicht, auch wenn dort 'All' Permissions steht. " +
-                "Erstelle den Key unter Organization/Admin API Keys und trage ihn als OpenAI Admin-Key ein.");
+                "OpenAI rejected the costs request: Usage/Costs requires an OpenAI Admin API key with api.usage.read. " +
+                "A regular project or service-account key is not enough, even when it shows 'All' permissions. " +
+                "Create the key under Organization/Admin API Keys and enter it as the OpenAI Admin key.");
         }
 
         EnsureSuccess(response, body);
@@ -1200,7 +1200,7 @@ sealed class ApiKeyPromptForm : Form
     public ApiKeyPromptForm(string provider)
     {
         this.provider = provider;
-        Text = $"API-Key für {provider}";
+        Text = $"API key for {provider}";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -1223,7 +1223,7 @@ sealed class ApiKeyPromptForm : Form
 
         var label = new Label
         {
-            Text = $"Für {provider} ist noch kein API-Key hinterlegt.",
+            Text = $"No API key is configured for {provider} yet.",
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
         };
@@ -1235,7 +1235,7 @@ sealed class ApiKeyPromptForm : Form
 
         var hint = new Label
         {
-            Text = string.IsNullOrWhiteSpace(envNames) ? "Der Key wird in appsettings.json gespeichert." : $"Alternativ kannst du {envNames} als Umgebungsvariable setzen.",
+            Text = string.IsNullOrWhiteSpace(envNames) ? "The key will be stored in appsettings.json." : $"Alternatively, set {envNames} as an environment variable.",
             ForeColor = Color.FromArgb(90, 96, 105),
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
@@ -1249,8 +1249,8 @@ sealed class ApiKeyPromptForm : Form
             Padding = new Padding(0, 10, 0, 0),
             WrapContents = false
         };
-        var saveButton = new Button { Text = "Speichern", Width = 92, DialogResult = DialogResult.OK };
-        var cancelButton = new Button { Text = "Abbrechen", Width = 92, DialogResult = DialogResult.Cancel };
+        var saveButton = new Button { Text = "Save", Width = 92, DialogResult = DialogResult.OK };
+        var cancelButton = new Button { Text = "Cancel", Width = 92, DialogResult = DialogResult.Cancel };
         saveButton.Click += (_, _) => ValidateApiKey();
         buttons.Controls.Add(saveButton);
         buttons.Controls.Add(cancelButton);
@@ -1269,7 +1269,7 @@ sealed class ApiKeyPromptForm : Form
         }
 
         DialogResult = DialogResult.None;
-        MessageBox.Show(this, $"Bitte einen API-Key für {provider} eintragen.", "API-Key fehlt", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        MessageBox.Show(this, $"Enter an API key for {provider}.", "API key missing", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 }
 
@@ -1323,7 +1323,7 @@ sealed class OpenAiAdminKeyHelpForm : Form
             WrapContents = false
         };
         var okButton = new Button { Text = "OK", Width = 92, DialogResult = DialogResult.OK };
-        var openButton = new Button { Text = "Seite öffnen", Width = 105 };
+        var openButton = new Button { Text = "Open page", Width = 105 };
         openButton.Click += (_, _) => OpenUrl(OpenAiLinks.AdminApiKeys);
         buttons.Controls.Add(okButton);
         buttons.Controls.Add(openButton);
@@ -1378,7 +1378,7 @@ sealed class SettingsForm : Form
             editedProviderApiKeys[config.Provider] = config.ApiKey;
         }
 
-        Text = "EchoScribe Einstellungen";
+        Text = "EchoScribe Settings";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -1402,7 +1402,7 @@ sealed class SettingsForm : Form
             ? config.SummaryProvider.ToLowerInvariant()
             : "openai";
         summaryModelBox.Text = config.SummaryModelFor(summaryProviderBox.SelectedItem?.ToString() ?? "openai");
-        appFetchUrlBox.Text = "Webseiteninhalt bei Bedarf lokal abrufen";
+        appFetchUrlBox.Text = "Fetch webpage content locally when needed";
         appFetchUrlBox.Checked = config.AppFetchUrl;
         appFetchUrlBox.AutoSize = true;
         urlSummaryPromptBox.Text = config.UrlSummaryPrompt;
@@ -1416,7 +1416,7 @@ sealed class SettingsForm : Form
         hotkeyBox.BackColor = SystemColors.Window;
         hotkeyBox.TabStop = true;
         hotkeyBox.KeyDown += CaptureHotkey;
-        hotkeyBox.GotFocus += (_, _) => hotkeyStatusLabel.Text = "Jetzt Tastenkombination drücken";
+        hotkeyBox.GotFocus += (_, _) => hotkeyStatusLabel.Text = "Press the keyboard shortcut now";
         hotkeyBox.Click += (_, _) => hotkeyBox.SelectAll();
 
         sttProviderBox.SelectedIndexChanged += (_, _) =>
@@ -1443,7 +1443,7 @@ sealed class SettingsForm : Form
             lastSummaryProvider = provider;
         };
 
-        hotkeyStatusLabel.Text = "Feld anklicken und gewünschte Tastenkombination drücken";
+        hotkeyStatusLabel.Text = "Click the field and press the desired keyboard shortcut";
         hotkeyStatusLabel.ForeColor = Color.FromArgb(90, 96, 105);
         hotkeyStatusLabel.Dock = DockStyle.Fill;
 
@@ -1459,8 +1459,8 @@ sealed class SettingsForm : Form
             Padding = new Padding(0, 8, 0, 0),
             WrapContents = false
         };
-        var saveButton = new Button { Text = "Speichern", Width = 92, DialogResult = DialogResult.OK };
-        var cancelButton = new Button { Text = "Abbrechen", Width = 92, DialogResult = DialogResult.Cancel };
+        var saveButton = new Button { Text = "Save", Width = 92, DialogResult = DialogResult.OK };
+        var cancelButton = new Button { Text = "Cancel", Width = 92, DialogResult = DialogResult.Cancel };
         saveButton.Click += (_, e) => SaveSettings(e);
         buttons.Controls.Add(saveButton);
         buttons.Controls.Add(cancelButton);
@@ -1488,8 +1488,8 @@ sealed class SettingsForm : Form
         var layout = CreateFormLayout(6);
         AddHeader(layout, 0, "Speech-to-Text");
         AddRow(layout, 1, "STT-Provider", sttProviderBox);
-        AddRow(layout, 2, "STT-Modell", sttModelBox);
-        AddRow(layout, 3, "Sprache", languageBox);
+        AddRow(layout, 2, "STT model", sttModelBox);
+        AddRow(layout, 3, "Language", languageBox);
         AddRow(layout, 4, "Hotkey", hotkeyBox);
         layout.Controls.Add(new Label(), 0, 5);
         layout.Controls.Add(hotkeyStatusLabel, 1, 5);
@@ -1501,9 +1501,9 @@ sealed class SettingsForm : Form
     {
         var tab = new TabPage("Web Summary");
         var layout = CreateFormLayout(6);
-        AddHeader(layout, 0, "Chrome-Zusammenfassungen");
+        AddHeader(layout, 0, "Chrome summaries");
         AddRow(layout, 1, "Summary-Provider", summaryProviderBox);
-        AddRow(layout, 2, "Summary-Modell", summaryModelBox);
+        AddRow(layout, 2, "Summary model", summaryModelBox);
         layout.Controls.Add(new Label(), 0, 3);
         layout.Controls.Add(appFetchUrlBox, 1, 3);
         AddRow(layout, 4, "URL-Prompt", urlSummaryPromptBox);
@@ -1511,7 +1511,7 @@ sealed class SettingsForm : Form
         layout.RowStyles[4].Height = 100;
         var hint = new Label
         {
-            Text = "Claude ist hier für Textzusammenfassungen eingebunden; STT/TTS läuft über die Audio-Provider.",
+            Text = "Claude is available here for text summaries; STT/TTS runs through the audio providers.",
             ForeColor = Color.FromArgb(90, 96, 105),
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
@@ -1524,9 +1524,9 @@ sealed class SettingsForm : Form
 
     private TabPage BuildKeysTab()
     {
-        var tab = new TabPage("API-Keys");
+        var tab = new TabPage("API Keys");
         var layout = CreateFormLayout(8);
-        AddHeader(layout, 0, "Provider-Keys");
+        AddHeader(layout, 0, "Provider keys");
         var row = 1;
         foreach (var provider in new[] { "openai", "elevenlabs", "gemini", "anthropic", "xai" })
         {
@@ -1540,8 +1540,8 @@ sealed class SettingsForm : Form
             AddRow(layout, row++, ProviderLabel(provider), box);
         }
 
-        AddRow(layout, row++, "OpenAI Admin-Key", openAiAdminKeyBox);
-        showKeysBox.Text = "Keys anzeigen";
+        AddRow(layout, row++, "OpenAI Admin key", openAiAdminKeyBox);
+        showKeysBox.Text = "Show keys";
         showKeysBox.AutoSize = true;
         showKeysBox.CheckedChanged += (_, _) => SetKeyMask(!showKeysBox.Checked);
         layout.Controls.Add(new Label(), 0, row);
@@ -1589,7 +1589,7 @@ sealed class SettingsForm : Form
 
         if (e.KeyCode is Keys.ControlKey or Keys.ShiftKey or Keys.Menu or Keys.LWin or Keys.RWin)
         {
-            hotkeyStatusLabel.Text = "Noch eine normale Taste dazu drücken";
+            hotkeyStatusLabel.Text = "Press a regular key as well";
             hotkeyStatusLabel.ForeColor = Color.FromArgb(170, 120, 20);
             return;
         }
@@ -1597,7 +1597,7 @@ sealed class SettingsForm : Form
         var candidate = Hotkey.FromPressedKeys(e.KeyCode);
         if (!candidate.HasAnyModifier)
         {
-            hotkeyStatusLabel.Text = "Bitte mit Win, Alt, Ctrl oder Shift kombinieren";
+            hotkeyStatusLabel.Text = "Combine it with Win, Alt, Ctrl, or Shift";
             hotkeyStatusLabel.ForeColor = Color.FromArgb(170, 120, 20);
             return;
         }
@@ -1605,12 +1605,12 @@ sealed class SettingsForm : Form
         if (candidate.Display == Config.Hotkey.Display || HotkeyProbe.IsAvailable(candidate))
         {
             hotkeyBox.Text = candidate.Display;
-            hotkeyStatusLabel.Text = "Hotkey ist verfügbar";
+            hotkeyStatusLabel.Text = "Hotkey is available";
             hotkeyStatusLabel.ForeColor = Color.FromArgb(38, 166, 91);
             return;
         }
 
-        hotkeyStatusLabel.Text = "Diese Kombination ist bereits vergeben";
+        hotkeyStatusLabel.Text = "This shortcut is already in use";
         hotkeyStatusLabel.ForeColor = Color.FromArgb(200, 60, 60);
     }
 
@@ -1689,7 +1689,7 @@ sealed class SettingsForm : Form
         catch (Exception ex)
         {
             DialogResult = DialogResult.None;
-            MessageBox.Show(this, ex.Message, "Einstellungen konnten nicht gespeichert werden", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, ex.Message, "Settings could not be saved", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 }
@@ -2568,7 +2568,7 @@ static class BrowserExtensionInstaller
         File.WriteAllText(manifestPath, json, Encoding.UTF8);
 
         using var key = Registry.CurrentUser.CreateSubKey($@"Software\Google\Chrome\NativeMessagingHosts\{NativeHostName}", writable: true)
-            ?? throw new InvalidOperationException("Registry-Schlüssel für Chrome Native Messaging konnte nicht erstellt werden.");
+            ?? throw new InvalidOperationException("Chrome Native Messaging registry key could not be created.");
         key.SetValue("", manifestPath, RegistryValueKind.String);
 
         return new BrowserExtensionInstallResult(extensionId, extensionDirectory, manifestPath);
@@ -2587,7 +2587,7 @@ static class BrowserExtensionInstaller
             .ToArray();
 
         return candidates.FirstOrDefault()
-            ?? throw new DirectoryNotFoundException("Der Ordner browser-extension/chrome-extension wurde nicht gefunden. Bitte zuerst EchoScribe vollständig bauen/publizieren.");
+            ?? throw new DirectoryNotFoundException("The browser-extension/chrome-extension folder was not found. Build or publish EchoScribe first.");
     }
 
     private static string FindNativeHostPath()
@@ -2607,7 +2607,7 @@ static class BrowserExtensionInstaller
             .ToArray();
 
         return candidates.FirstOrDefault()
-            ?? throw new FileNotFoundException("EchoScribe.NativeHost.exe wurde nicht gefunden. Bitte den Native Host zuerst bauen/publizieren.");
+            ?? throw new FileNotFoundException("EchoScribe.NativeHost.exe was not found. Build or publish the native host first.");
     }
 
     private static IEnumerable<string> CandidateRoots()
@@ -2634,7 +2634,7 @@ static class BrowserExtensionInstaller
         using var json = JsonDocument.Parse(File.ReadAllText(manifestPath));
         if (!json.RootElement.TryGetProperty("key", out var keyElement) || keyElement.ValueKind != JsonValueKind.String)
         {
-            throw new InvalidOperationException("browser-extension/manifest.json braucht ein 'key'-Feld, damit die Extension-ID stabil bleibt.");
+            throw new InvalidOperationException("browser-extension/manifest.json needs a 'key' field so the extension ID stays stable.");
         }
 
         var publicKey = Convert.FromBase64String(keyElement.GetString() ?? "");

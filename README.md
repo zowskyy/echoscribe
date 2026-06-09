@@ -77,6 +77,7 @@ To use EchoScribe, you'll need at least one API key:
 ### Desktop Setup
 - Linux: see `desktop/linux/README.md`.
 - Windows: see `desktop/windows/README.md`.
+- Browser summaries use a manually loaded Chrome/Chromium extension plus a local Native Messaging host. The native host is registered by the installer but only runs when the extension sends a summary request.
 - Model defaults are tracked in `config/ai_models.json`; run `tooling/verify_ai_models.py` after model updates.
 
 ---
