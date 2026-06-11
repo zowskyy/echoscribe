@@ -29,25 +29,29 @@ Configuration lives in `appsettings.json` next to the executable. The project ca
 
 The settings dialog is split into three tabs:
 
-- `Audio`: STT provider/model, language, and hotkey.
-- `Web Summary`: browser summary provider/model, URL extraction, and the URL summary prompt.
-- `API-Keys`: all provider keys in one place, so STT can use ElevenLabs while summaries use Claude, OpenAI, Gemini, or xAI.
+- `Audio`: STT provider/model, Local AI Whisper URL, language, and hotkey.
+- `Web Summary`: browser summary provider/model, Local AI LLM URL, URL extraction, and the URL summary prompt.
+- `API-Keys`: cloud provider keys.
 
 Speech-to-text providers:
 
 - `openai`: `OPENAI_API_KEY`, default model `gpt-4o-mini-transcribe`
 - `elevenlabs`: `ELEVENLABS_API_KEY`, default model `scribe_v2`
-- `gemini`: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, default model `gemini-3.1-flash-lite`
+- `gemini`: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, default model `gemini-3.5-flash`
 - `xai`: `XAI_API_KEY`, uses `https://api.x.ai/v1/stt`
+- `localai`: Local AI Whisper-compatible endpoint, default URL `http://192.168.178.20:8000/v1/audio/transcriptions`, default model `whisper-1`
 
 Summary providers:
 
 - `openai`: Chat Completions, default summary model `gpt-5.4-mini`
-- `gemini`: `generateContent`, default summary model `gemini-3.1-flash-lite`
+- `gemini`: `generateContent`, default summary model `gemini-3.5-flash`
 - `anthropic`: Messages API, default summary model `claude-sonnet-4-6`
 - `xai`: OpenAI-compatible Chat Completions, default summary model `grok-4.3`
+- `localai`: Ollama-compatible `/api/chat`, default URL `http://192.168.178.20:11434/api/chat`, default model `qwen2.5:3b`
 
 Claude/Anthropic is implemented for text summaries only. This app does not support Claude speech-to-text or text-to-speech unless Anthropic ships suitable audio models and the app is extended for them.
+
+Local AI expects an Ollama-compatible chat API with `model`, `stream: false`, and `messages`; EchoScribe reads `message.content`. For STT it sends multipart `file`, `model`, `response_format=json`, and optional `language`, then reads `text`. Example Ollama models: `qwen2.5:3b`, `gemma3`, `deepseek-r1`. For PoC use, keep endpoints on a trusted local network or VPN; EchoScribe does not add authentication to Local AI requests.
 
 Install from a GitHub release:
 

@@ -72,7 +72,9 @@ static class NativeHostApp
             var config = LazyConfig.Load();
             var provider = config.ResolveSummaryProvider(request.Provider);
             var model = config.SummaryModelFor(provider);
-            var apiKey = config.ResolveApiKey(provider);
+            var apiKey = provider.Equals("localai", StringComparison.OrdinalIgnoreCase)
+                ? ""
+                : config.ResolveApiKey(provider);
             var source = await BuildSourceTextAsync(request, config);
             var prompt = BuildPrompt(config.UrlSummaryPrompt, config.LanguageDirective(request.TargetLanguageCode), source);
             var systemPrompt = $"You are a precise summarizer. {config.LanguageDirective(request.TargetLanguageCode)} Output only the summary, with no preface or labels.";
@@ -83,6 +85,7 @@ static class NativeHostApp
                 "gemini" => await SummarizeGeminiAsync(apiKey, model, prompt),
                 "anthropic" => await SummarizeAnthropicAsync(apiKey, model, systemPrompt, prompt),
                 "xai" => await SummarizeXaiAsync(apiKey, model, systemPrompt, prompt, config.XaiReasoningEffort),
+                "localai" => await SummarizeLocalAiAsync(config.LocalAiLlmUrl, model, systemPrompt, prompt),
                 _ => throw new InvalidOperationException($"Unsupported summary provider '{provider}'.")
             };
 
@@ -314,6 +317,32 @@ static class NativeHostApp
         return json.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString() ?? "";
     }
 
+    private static async Task<string> SummarizeLocalAiAsync(string endpoint, string model, string systemPrompt, string prompt)
+    {
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            throw new InvalidOperationException("Local AI LLM URL is not configured.");
+        }
+        var payload = new
+        {
+            model,
+            stream = false,
+            messages = new object[]
+            {
+                new { role = "system", content = systemPrompt },
+                new { role = "user", content = prompt }
+            }
+        };
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+        request.Content = JsonContent(payload);
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureSuccess(response, body);
+        using var json = JsonDocument.Parse(body);
+        return json.RootElement.GetProperty("message").GetProperty("content").GetString() ?? "";
+    }
+
     private static StringContent JsonContent(object payload)
     {
         return new StringContent(JsonSerializer.Serialize(payload, JsonOptions), Encoding.UTF8, "application/json");
@@ -369,15 +398,17 @@ static class NativeHostApp
 
 sealed class LazyConfig
 {
-    public static readonly string[] SummaryProviders = ["openai", "gemini", "anthropic", "xai"];
+    public const string DefaultLocalAiLlmUrl = "http://192.168.178.20:11434/api/chat";
+    public static readonly string[] SummaryProviders = ["openai", "gemini", "anthropic", "xai", "localai"];
 
     public required string ConfigPath { get; init; }
     public string Provider { get; init; } = "openai";
-    public string Language { get; init; } = "de";
+    public string Language { get; init; } = "auto";
     public string SummaryProvider { get; init; } = "openai";
     public string UrlSummaryPrompt { get; init; } = "";
     public bool AppFetchUrl { get; init; } = true;
     public string XaiReasoningEffort { get; init; } = "none";
+    public string LocalAiLlmUrl { get; init; } = DefaultLocalAiLlmUrl;
     public Dictionary<string, string> ApiKeys { get; init; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> SummaryModels { get; init; } = new(StringComparer.OrdinalIgnoreCase);
 
@@ -406,12 +437,13 @@ sealed class LazyConfig
         {
             ConfigPath = configPath,
             Provider = provider,
-            Language = ReadString(root, "language", "de"),
+            Language = ReadString(root, "language", "auto"),
             SummaryProvider = ReadString(root, "summaryProvider", provider.Equals("elevenlabs", StringComparison.OrdinalIgnoreCase) ? "openai" : provider),
             SummaryModels = ReadStringMap(root, "summaryModels"),
-            UrlSummaryPrompt = ReadString(root, "urlSummaryPrompt", ""),
+            UrlSummaryPrompt = FirstNonEmpty(ReadString(root, "urlSummaryPrompt", ""), DefaultUrlSummaryPrompt),
             AppFetchUrl = ReadBool(root, "appFetchUrl", true),
             XaiReasoningEffort = ReadString(root, "xaiReasoningEffort", "none"),
+            LocalAiLlmUrl = ReadString(root, "localAiLlmUrl", DefaultLocalAiLlmUrl),
             ApiKeys = apiKeys
         };
     }
@@ -440,9 +472,10 @@ sealed class LazyConfig
 
         return provider switch
         {
-            "gemini" => "gemini-3.1-flash-lite",
+            "gemini" => "gemini-3.5-flash",
             "anthropic" => "claude-sonnet-4-6",
             "xai" => "grok-4.3",
+            "localai" => "qwen2.5:3b",
             _ => "gpt-5.4-mini"
         };
     }
@@ -472,6 +505,32 @@ sealed class LazyConfig
         }
 
         throw new InvalidOperationException($"API key for summary provider '{provider}' is missing.");
+    }
+
+    public string OptionalApiKey(string provider, string configured = "")
+    {
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        if (ApiKeys.TryGetValue(provider, out var apiKey) && !string.IsNullOrWhiteSpace(apiKey))
+        {
+            return apiKey;
+        }
+
+        foreach (var name in EnvNamesFor(provider))
+        {
+            var value = Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User)
+                ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Process)
+                ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Machine);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return "";
     }
 
     public string LanguageDirective(string? requestedCode)

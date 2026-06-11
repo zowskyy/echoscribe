@@ -187,7 +187,9 @@ sealed class TrayAppContext : ApplicationContext
         }
 
         var apiKey = current.GetApiKeyForProvider(provider);
-        if (string.IsNullOrWhiteSpace(apiKey) && !AppConfig.HasEnvironmentApiKey(provider))
+        if (AppConfig.RequiresApiKey(provider) &&
+            string.IsNullOrWhiteSpace(apiKey) &&
+            !AppConfig.HasEnvironmentApiKey(provider))
         {
             using var prompt = new ApiKeyPromptForm(provider);
             if (prompt.ShowDialog() != DialogResult.OK)
@@ -214,7 +216,9 @@ sealed class TrayAppContext : ApplicationContext
         }
 
         var apiKey = current.GetApiKeyForProvider(provider);
-        if (string.IsNullOrWhiteSpace(apiKey) && !AppConfig.HasEnvironmentApiKey(provider))
+        if (AppConfig.RequiresApiKey(provider) &&
+            string.IsNullOrWhiteSpace(apiKey) &&
+            !AppConfig.HasEnvironmentApiKey(provider))
         {
             using var prompt = new ApiKeyPromptForm(provider);
             if (prompt.ShowDialog() != DialogResult.OK)
@@ -528,6 +532,7 @@ sealed class TranscriptionClient(AppConfig config)
             "gemini" => await TranscribeGeminiAsync(wavPath),
             "anthropic" => throw new InvalidOperationException("Claude/Anthropic is available for web summaries, but EchoScribe does not support it for speech-to-text or text-to-speech."),
             "xai" => await TranscribeXaiAsync(wavPath),
+            "localai" => await TranscribeLocalAiAsync(wavPath),
             _ => throw new InvalidOperationException($"Unknown provider '{config.Provider}'.")
         };
     }
@@ -626,7 +631,7 @@ sealed class TranscriptionClient(AppConfig config)
             }
         });
 
-        var model = string.IsNullOrWhiteSpace(config.Model) ? "gemini-3.1-flash-lite" : config.Model;
+        var model = string.IsNullOrWhiteSpace(config.Model) ? "gemini-3.5-flash" : config.Model;
         using var generate = new HttpRequestMessage(HttpMethod.Post, $"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
         generate.Headers.Add("x-goog-api-key", apiKey);
         generate.Content = new StringContent(generateBody, Encoding.UTF8, "application/json");
@@ -649,6 +654,32 @@ sealed class TranscriptionClient(AppConfig config)
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.x.ai/v1/stt");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        request.Content = form;
+        using var response = await Http.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        EnsureSuccess(response, body);
+        return JsonText(body, "text");
+    }
+
+    private async Task<string> TranscribeLocalAiAsync(string wavPath)
+    {
+        if (string.IsNullOrWhiteSpace(config.LocalAiWhisperUrl))
+        {
+            throw new InvalidOperationException("Local AI Whisper URL is not configured.");
+        }
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent(string.IsNullOrWhiteSpace(config.Model) ? "whisper-1" : config.Model), "model");
+        form.Add(new StringContent("json"), "response_format");
+        if (!string.IsNullOrWhiteSpace(config.Language) && !config.Language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            form.Add(new StringContent(config.Language), "language");
+        }
+        form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
+        {
+            Headers = { ContentType = new MediaTypeHeaderValue("audio/wav") }
+        }, "file", "recording.wav");
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, config.LocalAiWhisperUrl);
         request.Content = form;
         using var response = await Http.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
@@ -696,6 +727,10 @@ sealed class BillingClient(AppConfig config)
             "xai" => Task.FromResult(new BillingSummary(
                 "xAI shows prepaid credits and usage in the console. An official balance endpoint is not documented in the REST API. EchoScribe will open the billing page.",
                 "https://console.x.ai/team/default/billing")),
+            "localai" => Task.FromResult(new BillingSummary(
+                "Local AI runs on your own server. EchoScribe cannot read usage or billing information for it.",
+                null,
+                true)),
             _ => Task.FromResult(new BillingSummary($"Unknown provider '{config.Provider}'.", null, true))
         };
     }
@@ -876,19 +911,40 @@ sealed record AppConfig(
     IReadOnlyDictionary<string, string> SummaryModels,
     string UrlSummaryPrompt,
     bool AppFetchUrl,
+    string LocalAiLlmUrl,
+    string LocalAiWhisperUrl,
     Hotkey Hotkey)
 {
     public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-    public static readonly string[] SupportedProviders = ["openai", "elevenlabs", "gemini", "xai"];
-    public static readonly string[] SupportedSummaryProviders = ["openai", "gemini", "anthropic", "xai"];
+    public const string DefaultLocalAiLlmUrl = "http://192.168.178.20:11434/api/chat";
+    public const string DefaultLocalAiWhisperUrl = "http://192.168.178.20:8000/v1/audio/transcriptions";
+    public const string DefaultUrlSummaryPrompt =
+        "Summarize the provided webpage content.\n\n" +
+        "Rules:\n" +
+        "- Use ONLY information present in the content.\n" +
+        "- Never guess or invent missing details.\n" +
+        "- Replace vague or clickbait headlines with the specific subject described in the text.\n" +
+        "- Prefer concrete facts (names, numbers, results, ingredients, products).\n" +
+        "- Remove filler and marketing language.\n" +
+        "- Adapt to the content type automatically.\n\n" +
+        "Structure:\n" +
+        "- If the content contains multiple distinct aspects (e.g. results, ingredients, steps, features, findings), you MAY organize the summary into 2-4 short sections.\n" +
+        "- Each section may have a short \"##\" heading and one fitting emoji.\n" +
+        "- Keep section titles very short (1-3 words).\n" +
+        "- Each section should contain one concise sentence.\n" +
+        "- If the content is simple, write a short paragraph instead (1-3 sentences).\n\n" +
+        "If the content is missing or insufficient, state the reason or describe why a summary cannot be created.";
+    public static readonly string[] SupportedProviders = ["openai", "elevenlabs", "gemini", "xai", "localai"];
+    public static readonly string[] SupportedSummaryProviders = ["openai", "gemini", "anthropic", "xai", "localai"];
 
     public static string DefaultModelFor(string provider)
     {
         return provider.ToLowerInvariant() switch
         {
             "elevenlabs" => "scribe_v2",
-            "gemini" => "gemini-3.1-flash-lite",
+            "gemini" => "gemini-3.5-flash",
             "xai" => "xai-stt",
+            "localai" => "whisper-1",
             _ => "gpt-4o-mini-transcribe"
         };
     }
@@ -897,12 +953,16 @@ sealed record AppConfig(
     {
         return provider.ToLowerInvariant() switch
         {
-            "gemini" => "gemini-3.1-flash-lite",
+            "gemini" => "gemini-3.5-flash",
             "anthropic" => "claude-sonnet-4-6",
             "xai" => "grok-4.3",
+            "localai" => "qwen2.5:3b",
             _ => "gpt-5.4-mini"
         };
     }
+
+    public static bool RequiresApiKey(string provider) =>
+        !provider.Equals("localai", StringComparison.OrdinalIgnoreCase);
 
     public static string[] EnvNamesFor(string provider)
     {
@@ -913,6 +973,7 @@ sealed record AppConfig(
             "gemini" => ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             "anthropic" => ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
             "xai" => ["XAI_API_KEY"],
+            "localai" => [],
             _ => []
         };
     }
@@ -941,7 +1002,7 @@ sealed record AppConfig(
             {
               "provider": "openai",
               "model": "gpt-4o-mini-transcribe",
-              "language": "de",
+              "language": "auto",
               "apiKey": "",
               "apiKeys": {},
               "openAiAdminKey": "",
@@ -949,6 +1010,8 @@ sealed record AppConfig(
               "summaryModels": {},
               "urlSummaryPrompt": "",
               "appFetchUrl": true,
+              "localAiLlmUrl": "http://192.168.178.20:11434/api/chat",
+              "localAiWhisperUrl": "http://192.168.178.20:8000/v1/audio/transcriptions",
               "hotkey": "Alt+A"
             }
             """);
@@ -981,14 +1044,16 @@ sealed record AppConfig(
         return new AppConfig(
             provider,
             model,
-            ReadString(root, "language", "de"),
+            ReadString(root, "language", "auto"),
             currentApiKey,
             ReadString(root, "openAiAdminKey", ""),
             providerApiKeys,
             NormalizeSummaryProvider(ReadString(root, "summaryProvider", provider.Equals("elevenlabs", StringComparison.OrdinalIgnoreCase) ? "openai" : provider)),
             ReadStringMap(root, "summaryModels"),
-            ReadString(root, "urlSummaryPrompt", ""),
+            FirstNonEmpty(ReadString(root, "urlSummaryPrompt", ""), DefaultUrlSummaryPrompt),
             ReadBool(root, "appFetchUrl", true),
+            ReadString(root, "localAiLlmUrl", DefaultLocalAiLlmUrl),
+            ReadString(root, "localAiWhisperUrl", DefaultLocalAiWhisperUrl),
             Hotkey.Parse(ReadString(root, "hotkey", "Alt+A")));
     }
 
@@ -1013,6 +1078,8 @@ sealed record AppConfig(
             summaryModels = SummaryModels,
             urlSummaryPrompt = UrlSummaryPrompt,
             appFetchUrl = AppFetchUrl,
+            localAiLlmUrl = LocalAiLlmUrl,
+            localAiWhisperUrl = LocalAiWhisperUrl,
             hotkey = Hotkey.Display
         };
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
@@ -1082,8 +1149,10 @@ sealed record AppConfig(
             apiKeys,
             SummaryProvider,
             SummaryModels,
-            UrlSummaryPrompt,
+            FirstNonEmpty(UrlSummaryPrompt, DefaultUrlSummaryPrompt),
             AppFetchUrl,
+            LocalAiLlmUrl,
+            LocalAiWhisperUrl,
             Hotkey);
     }
 
@@ -1118,7 +1187,8 @@ sealed record AppConfig(
         {
             ProviderApiKeys = apiKeys,
             SummaryProvider = providerKey,
-            SummaryModels = summaryModels
+            SummaryModels = summaryModels,
+            UrlSummaryPrompt = FirstNonEmpty(UrlSummaryPrompt, DefaultUrlSummaryPrompt)
         };
     }
 
@@ -1142,6 +1212,11 @@ sealed record AppConfig(
 
         throw new MissingOpenAiAdminKeyException(
             $"OpenAI Admin API Key fehlt. Erstelle ihn unter Organization/Admin API Keys und trage ihn in {ConfigPath} unter openAiAdminKey ein oder setze OPENAI_ADMIN_KEY / OPENAI_ADMIN_API_KEY.");
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
     }
 
     private static string ReadString(JsonElement root, string name, string fallback)
@@ -1351,9 +1426,11 @@ sealed class SettingsForm : Form
 {
     private readonly ComboBox sttProviderBox = new();
     private readonly TextBox sttModelBox = new();
+    private readonly TextBox localAiWhisperUrlBox = new();
     private readonly TextBox languageBox = new();
     private readonly ComboBox summaryProviderBox = new();
     private readonly TextBox summaryModelBox = new();
+    private readonly TextBox localAiLlmUrlBox = new();
     private readonly CheckBox appFetchUrlBox = new();
     private readonly TextBox urlSummaryPromptBox = new();
     private readonly Dictionary<string, TextBox> apiKeyBoxes = new(StringComparer.OrdinalIgnoreCase);
@@ -1387,7 +1464,7 @@ sealed class SettingsForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(720, 560);
+        ClientSize = new Size(720, 640);
         Font = new Font("Segoe UI", 9F);
 
         sttProviderBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -1396,20 +1473,23 @@ sealed class SettingsForm : Form
             ? config.Provider.ToLowerInvariant()
             : "openai";
         sttModelBox.Text = string.IsNullOrWhiteSpace(config.Model) ? AppConfig.DefaultModelFor(config.Provider) : config.Model;
+        localAiWhisperUrlBox.Text = string.IsNullOrWhiteSpace(config.LocalAiWhisperUrl) ? AppConfig.DefaultLocalAiWhisperUrl : config.LocalAiWhisperUrl;
         languageBox.Text = config.Language;
         openAiAdminKeyBox.Text = config.OpenAiAdminKey ?? "";
         openAiAdminKeyBox.UseSystemPasswordChar = true;
-
         summaryProviderBox.DropDownStyle = ComboBoxStyle.DropDownList;
         summaryProviderBox.Items.AddRange(AppConfig.SupportedSummaryProviders.Cast<object>().ToArray());
         summaryProviderBox.SelectedItem = AppConfig.SupportedSummaryProviders.Contains(config.SummaryProvider, StringComparer.OrdinalIgnoreCase)
             ? config.SummaryProvider.ToLowerInvariant()
             : "openai";
         summaryModelBox.Text = config.SummaryModelFor(summaryProviderBox.SelectedItem?.ToString() ?? "openai");
+        localAiLlmUrlBox.Text = string.IsNullOrWhiteSpace(config.LocalAiLlmUrl) ? AppConfig.DefaultLocalAiLlmUrl : config.LocalAiLlmUrl;
         appFetchUrlBox.Text = "Fetch webpage content locally when needed";
         appFetchUrlBox.Checked = config.AppFetchUrl;
         appFetchUrlBox.AutoSize = true;
-        urlSummaryPromptBox.Text = config.UrlSummaryPrompt;
+        urlSummaryPromptBox.Text = string.IsNullOrWhiteSpace(config.UrlSummaryPrompt)
+            ? AppConfig.DefaultUrlSummaryPrompt
+            : config.UrlSummaryPrompt;
         urlSummaryPromptBox.Multiline = true;
         urlSummaryPromptBox.ScrollBars = ScrollBars.Vertical;
         urlSummaryPromptBox.AcceptsReturn = true;
@@ -1489,14 +1569,15 @@ sealed class SettingsForm : Form
     private TabPage BuildAudioTab()
     {
         var tab = new TabPage("Audio");
-        var layout = CreateFormLayout(6);
+        var layout = CreateFormLayout(7);
         AddHeader(layout, 0, "Speech-to-Text");
         AddRow(layout, 1, "STT-Provider", sttProviderBox);
         AddRow(layout, 2, "STT model", sttModelBox);
-        AddRow(layout, 3, "Language", languageBox);
-        AddRow(layout, 4, "Hotkey", hotkeyBox);
-        layout.Controls.Add(new Label(), 0, 5);
-        layout.Controls.Add(hotkeyStatusLabel, 1, 5);
+        AddRow(layout, 3, "Local AI Whisper URL", localAiWhisperUrlBox);
+        AddRow(layout, 4, "Language", languageBox);
+        AddRow(layout, 5, "Hotkey", hotkeyBox);
+        layout.Controls.Add(new Label(), 0, 6);
+        layout.Controls.Add(hotkeyStatusLabel, 1, 6);
         tab.Controls.Add(layout);
         return tab;
     }
@@ -1504,24 +1585,25 @@ sealed class SettingsForm : Form
     private TabPage BuildSummaryTab()
     {
         var tab = new TabPage("Web Summary");
-        var layout = CreateFormLayout(6);
+        var layout = CreateFormLayout(7);
         AddHeader(layout, 0, "Browser summaries");
         AddRow(layout, 1, "Summary-Provider", summaryProviderBox);
         AddRow(layout, 2, "Summary model", summaryModelBox);
-        layout.Controls.Add(new Label(), 0, 3);
-        layout.Controls.Add(appFetchUrlBox, 1, 3);
-        AddRow(layout, 4, "URL-Prompt", urlSummaryPromptBox);
-        layout.RowStyles[4].SizeType = SizeType.Percent;
-        layout.RowStyles[4].Height = 100;
+        AddRow(layout, 3, "Local AI LLM URL", localAiLlmUrlBox);
+        layout.Controls.Add(new Label(), 0, 4);
+        layout.Controls.Add(appFetchUrlBox, 1, 4);
+        AddRow(layout, 5, "URL-Prompt", urlSummaryPromptBox);
+        layout.RowStyles[5].SizeType = SizeType.Percent;
+        layout.RowStyles[5].Height = 100;
         var hint = new Label
         {
-            Text = "Claude is available here for text summaries; STT/TTS runs through the audio providers.",
+            Text = "PoC mode: Local AI uses Ollama /api/chat for summaries. Keep it on a trusted local network or VPN.",
             ForeColor = Color.FromArgb(90, 96, 105),
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        layout.Controls.Add(new Label(), 0, 5);
-        layout.Controls.Add(hint, 1, 5);
+        layout.Controls.Add(new Label(), 0, 6);
+        layout.Controls.Add(hint, 1, 6);
         tab.Controls.Add(layout);
         return tab;
     }
@@ -1529,7 +1611,7 @@ sealed class SettingsForm : Form
     private TabPage BuildKeysTab()
     {
         var tab = new TabPage("API Keys");
-        var layout = CreateFormLayout(8);
+        var layout = CreateFormLayout(9);
         AddHeader(layout, 0, "Provider keys");
         var row = 1;
         foreach (var provider in new[] { "openai", "elevenlabs", "gemini", "anthropic", "xai" })
@@ -1648,6 +1730,7 @@ sealed class SettingsForm : Form
             "gemini" => "Gemini",
             "anthropic" => "Claude",
             "xai" => "xAI",
+            "localai" => "Local AI",
             _ => provider
         };
     }
@@ -1685,8 +1768,12 @@ sealed class SettingsForm : Form
                 apiKeys,
                 summaryProvider,
                 summaryModels,
-                urlSummaryPromptBox.Text.Trim(),
+                string.IsNullOrWhiteSpace(urlSummaryPromptBox.Text)
+                    ? AppConfig.DefaultUrlSummaryPrompt
+                    : urlSummaryPromptBox.Text.Trim(),
                 appFetchUrlBox.Checked,
+                string.IsNullOrWhiteSpace(localAiLlmUrlBox.Text) ? AppConfig.DefaultLocalAiLlmUrl : localAiLlmUrlBox.Text.Trim(),
+                string.IsNullOrWhiteSpace(localAiWhisperUrlBox.Text) ? AppConfig.DefaultLocalAiWhisperUrl : localAiWhisperUrlBox.Text.Trim(),
                 Hotkey.Parse(string.IsNullOrWhiteSpace(hotkeyBox.Text) ? "Alt+A" : hotkeyBox.Text.Trim()));
             Config.Save();
         }
