@@ -83,57 +83,177 @@ sealed class TrayAppContext : ApplicationContext
 
     private ContextMenuStrip BuildTrayMenu()
     {
-        var menu = new ContextMenuStrip();
-        menu.Items.Add($"Hotkey: {config.Hotkey.Display}", null, (_, _) => ShowStartupMessage());
-        menu.Items.Add($"STT: {config.Provider} / {config.Model}", null, (_, _) => ShowStartupMessage());
-        menu.Items.Add($"Summary: {config.SummaryProvider} / {config.SummaryModelFor(config.SummaryProvider)}", null, (_, _) => ShowStartupMessage());
-        var providerMenu = new ToolStripMenuItem("STT-Provider");
+        var menu = new ContextMenuStrip
+        {
+            ImageScalingSize = new Size(16, 16),
+            ShowImageMargin = true
+        };
+
+        menu.Items.Add(CreateInfoMenuItem("EchoScribe", MenuIconFactory.App()));
+        menu.Items.Add(CreateInfoMenuItem(GetTrayStateLabel(), MenuIconFactory.Status(isRecording, isTranscribing)));
+        menu.Items.Add(new ToolStripSeparator());
+
+        var startItem = CreateMenuItem("Start Dictation", MenuIconFactory.Mic(), (_, _) => BeginRecording());
+        startItem.Enabled = !isRecording && !isTranscribing;
+        menu.Items.Add(startItem);
+
+        if (isRecording)
+        {
+            menu.Items.Add(CreateMenuItem("Stop Dictation", MenuIconFactory.Stop(), (_, _) => EndRecording()));
+        }
+
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(BuildProvidersMenu());
+        menu.Items.Add(BuildBrowserExtensionMenu());
+        menu.Items.Add(BuildBillingMenu());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(CreateMenuItem("Settings...", MenuIconFactory.Settings(), (_, _) => OpenSettings()));
+        menu.Items.Add(CreateMenuItem("Open Config", MenuIconFactory.ConfigFile(), (_, _) => OpenConfig()));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add(CreateMenuItem("Quit EchoScribe", MenuIconFactory.Power(), (_, _) => ExitThread()));
+        return menu;
+    }
+
+    private ToolStripMenuItem BuildProvidersMenu()
+    {
+        var providersMenu = CreateMenuItem("Providers", MenuIconFactory.Providers());
+        providersMenu.DropDownItems.Add(BuildSttProviderMenu());
+        providersMenu.DropDownItems.Add(BuildSummaryProviderMenu());
+        return providersMenu;
+    }
+
+    private ToolStripMenuItem BuildSttProviderMenu()
+    {
+        var providerMenu = CreateMenuItem("STT Provider", MenuIconFactory.Mic());
         foreach (var provider in AppConfig.SupportedProviders)
         {
-            var item = new ToolStripMenuItem(provider)
-            {
-                Checked = provider.Equals(config.Provider, StringComparison.OrdinalIgnoreCase)
-            };
-            item.Click += (_, _) => SwitchProvider(provider);
+            var item = CreateMenuItem(ProviderDisplayName(provider), MenuIconFactory.ProviderOption(provider), (_, _) => SwitchProvider(provider));
+            item.Checked = provider.Equals(config.Provider, StringComparison.OrdinalIgnoreCase);
             providerMenu.DropDownItems.Add(item);
         }
 
-        menu.Items.Add(providerMenu);
-        var summaryProviderMenu = new ToolStripMenuItem("Summary-Provider");
+        return providerMenu;
+    }
+
+    private ToolStripMenuItem BuildSummaryProviderMenu()
+    {
+        var summaryProviderMenu = CreateMenuItem("Summary Provider", MenuIconFactory.Summary());
         foreach (var provider in AppConfig.SupportedSummaryProviders)
         {
-            var item = new ToolStripMenuItem(provider)
-            {
-                Checked = provider.Equals(config.SummaryProvider, StringComparison.OrdinalIgnoreCase)
-            };
-            item.Click += (_, _) => SwitchSummaryProvider(provider);
+            var item = CreateMenuItem(ProviderDisplayName(provider), MenuIconFactory.ProviderOption(provider), (_, _) => SwitchSummaryProvider(provider));
+            item.Checked = provider.Equals(config.SummaryProvider, StringComparison.OrdinalIgnoreCase);
             summaryProviderMenu.DropDownItems.Add(item);
         }
 
-        menu.Items.Add(summaryProviderMenu);
-        var billingMenu = new ToolStripMenuItem("Billing / Usage");
-        billingMenu.DropDownItems.Add("Check current provider", null, async (_, _) => await ShowBillingInfoAsync());
+        return summaryProviderMenu;
+    }
+
+    private ToolStripMenuItem BuildBillingMenu()
+    {
+        var billingMenu = CreateMenuItem("Usage & Billing", MenuIconFactory.Billing());
+        billingMenu.DropDownItems.Add(CreateMenuItem("Check Current Provider", MenuIconFactory.Status(false, false), async (_, _) => await ShowBillingInfoAsync()));
         billingMenu.DropDownItems.Add(new ToolStripSeparator());
-        billingMenu.DropDownItems.Add("Open OpenAI Usage", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/usage"));
-        billingMenu.DropDownItems.Add("Open OpenAI Billing Overview", null, (_, _) => OpenUrl("https://platform.openai.com/settings/organization/billing/overview"));
-        billingMenu.DropDownItems.Add("Open ElevenLabs Subscription", null, (_, _) => OpenUrl("https://elevenlabs.io/app/subscription"));
-        billingMenu.DropDownItems.Add("Open Gemini Usage & Billing", null, (_, _) => OpenUrl("https://aistudio.google.com/usage"));
-        billingMenu.DropDownItems.Add("Open xAI Billing", null, (_, _) => OpenUrl("https://console.x.ai/team/default/billing"));
-        menu.Items.Add(billingMenu);
-        var browserMenu = new ToolStripMenuItem("Browser Extension");
-        browserMenu.DropDownItems.Add("Register browser native hosts", null, (_, _) => InstallBrowserExtension());
-        browserMenu.DropDownItems.Add("Open extension folders", null, (_, _) => OpenBrowserExtensionFolders());
-        browserMenu.DropDownItems.Add("Open browser setup pages", null, (_, _) => OpenBrowserSetupPages());
-        menu.Items.Add(browserMenu);
-        menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
-        menu.Items.Add("Open config", null, (_, _) => Process.Start(new ProcessStartInfo
+        billingMenu.DropDownItems.Add(CreateMenuItem("Open OpenAI Usage", MenuIconFactory.ExternalLink(), (_, _) => OpenUrl("https://platform.openai.com/settings/organization/usage")));
+        billingMenu.DropDownItems.Add(CreateMenuItem("Open OpenAI Billing Overview", MenuIconFactory.ExternalLink(), (_, _) => OpenUrl("https://platform.openai.com/settings/organization/billing/overview")));
+        billingMenu.DropDownItems.Add(CreateMenuItem("Open ElevenLabs Subscription", MenuIconFactory.ExternalLink(), (_, _) => OpenUrl("https://elevenlabs.io/app/subscription")));
+        billingMenu.DropDownItems.Add(CreateMenuItem("Open Gemini Usage & Billing", MenuIconFactory.ExternalLink(), (_, _) => OpenUrl("https://aistudio.google.com/usage")));
+        billingMenu.DropDownItems.Add(CreateMenuItem("Open xAI Billing", MenuIconFactory.ExternalLink(), (_, _) => OpenUrl("https://console.x.ai/team/default/billing")));
+        return billingMenu;
+    }
+
+    private ToolStripMenuItem BuildBrowserExtensionMenu()
+    {
+        var browserMenu = CreateMenuItem("Browser Extension", MenuIconFactory.BrowserExtension());
+        browserMenu.DropDownItems.Add(CreateMenuItem("Register Browser Extensions", MenuIconFactory.BrowserExtension(), (_, _) => InstallBrowserExtension()));
+        browserMenu.DropDownItems.Add(CreateMenuItem("Open Extension Folders", MenuIconFactory.ConfigFile(), (_, _) => OpenBrowserExtensionFolders()));
+        browserMenu.DropDownItems.Add(new ToolStripSeparator());
+        browserMenu.DropDownItems.Add(BuildBrowserSetupMenu());
+        return browserMenu;
+    }
+
+    private ToolStripMenuItem BuildBrowserSetupMenu()
+    {
+        var setupMenu = CreateMenuItem("Open Browser Extension Page", MenuIconFactory.ExternalLink());
+        var targets = BrowserExtensionInstaller.GetAvailableBrowserSetupTargets();
+        if (targets.Count == 0)
+        {
+            setupMenu.DropDownItems.Add(new ToolStripMenuItem("No Supported Browser Found") { Enabled = false });
+            return setupMenu;
+        }
+
+        foreach (var target in targets)
+        {
+            setupMenu.DropDownItems.Add(CreateMenuItem(target, MenuIconFactory.ExternalLink(), (_, _) => OpenBrowserSetupPage(target)));
+        }
+
+        if (targets.Count > 1)
+        {
+            setupMenu.DropDownItems.Add(new ToolStripSeparator());
+            setupMenu.DropDownItems.Add(CreateMenuItem("Open All Detected Browsers", MenuIconFactory.ExternalLink(), (_, _) => OpenBrowserSetupPages()));
+        }
+
+        return setupMenu;
+    }
+
+    private static ToolStripMenuItem CreateMenuItem(string text, Image image)
+    {
+        return new ToolStripMenuItem(text, image);
+    }
+
+    private static ToolStripMenuItem CreateMenuItem(string text, Image image, EventHandler onClick)
+    {
+        return new ToolStripMenuItem(text, image, onClick);
+    }
+
+    private static ToolStripMenuItem CreateInfoMenuItem(string text, Image image)
+    {
+        return new ToolStripMenuItem(text, image)
+        {
+            Enabled = false
+        };
+    }
+
+    private string GetTrayStateLabel()
+    {
+        if (isRecording)
+        {
+            return "Recording";
+        }
+
+        if (isTranscribing)
+        {
+            return "Transcribing";
+        }
+
+        return "Ready";
+    }
+
+    private static string ProviderDisplayName(string provider)
+    {
+        return provider.ToLowerInvariant() switch
+        {
+            "openai" => "OpenAI",
+            "elevenlabs" => "ElevenLabs",
+            "gemini" => "Gemini",
+            "anthropic" => "Anthropic",
+            "xai" => "xAI",
+            "localai" => "Local AI",
+            _ => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(provider)
+        };
+    }
+
+    private static void OpenConfig()
+    {
+        Process.Start(new ProcessStartInfo
         {
             FileName = AppConfig.ConfigPath,
             UseShellExecute = true
-        }));
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Quit", null, (_, _) => ExitThread());
-        return menu;
+        });
+    }
+
+    private void RefreshTrayMenu()
+    {
+        trayIcon.ContextMenuStrip = BuildTrayMenu();
     }
 
     private void InstallBrowserExtension()
@@ -171,6 +291,18 @@ sealed class TrayAppContext : ApplicationContext
         {
             MessageBox.Show(
                 "No supported browser executable was found. Open the extension page manually in Chrome, Edge, Brave, Chromium, or Firefox.",
+                "EchoScribe Browser Extension",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        }
+    }
+
+    private static void OpenBrowserSetupPage(string browserName)
+    {
+        if (!BrowserExtensionInstaller.OpenBrowserSetupPage(browserName))
+        {
+            MessageBox.Show(
+                $"{browserName} was not found. Open the extension page manually.",
                 "EchoScribe Browser Extension",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -275,7 +407,7 @@ sealed class TrayAppContext : ApplicationContext
             keyboardHook.Start();
         }
 
-        trayIcon.ContextMenuStrip = BuildTrayMenu();
+        RefreshTrayMenu();
     }
 
     private async Task ShowBillingInfoAsync()
@@ -329,6 +461,7 @@ sealed class TrayAppContext : ApplicationContext
             recorder.Start();
             isRecording = true;
             keyboardHook.MarkActive();
+            RefreshTrayMenu();
             statusForm.ShowMessage("Recording", StatusKind.Recording);
         }
         catch (Exception ex)
@@ -349,6 +482,7 @@ sealed class TrayAppContext : ApplicationContext
         isRecording = false;
         keyboardHook.MarkInactive();
         isTranscribing = true;
+        RefreshTrayMenu();
         statusForm.ShowMessage("Transcription", StatusKind.Transcribing);
 
         try
@@ -378,6 +512,7 @@ sealed class TrayAppContext : ApplicationContext
         finally
         {
             isTranscribing = false;
+            RefreshTrayMenu();
         }
     }
 
@@ -542,7 +677,7 @@ sealed class TranscriptionClient(AppConfig config)
         var apiKey = config.ResolveApiKey("OPENAI_API_KEY");
         using var form = new MultipartFormDataContent();
         form.Add(new StringContent(config.Model), "model");
-        form.Add(new StringContent(config.Language), "language");
+        AddLanguageIfConfigured(form, "language");
         form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
         {
             Headers = { ContentType = new MediaTypeHeaderValue("audio/wav") }
@@ -562,7 +697,7 @@ sealed class TranscriptionClient(AppConfig config)
         var apiKey = config.ResolveApiKey("ELEVENLABS_API_KEY");
         using var form = new MultipartFormDataContent();
         form.Add(new StringContent(config.Model), "model_id");
-        form.Add(new StringContent(config.Language), "language_code");
+        AddLanguageIfConfigured(form, "language_code");
         form.Add(new StringContent("false"), "tag_audio_events");
         form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
         {
@@ -625,7 +760,7 @@ sealed class TranscriptionClient(AppConfig config)
                     parts = new object[]
                     {
                         new { file_data = new { mime_type = mimeType, file_uri = uri } },
-                        new { text = $"Transcribe the speech in this audio. Return only the transcript text. Language hint: {config.Language}." }
+                        new { text = $"Transcribe the speech in this audio. Return only the transcript text. {LanguagePromptInstruction()}" }
                     }
                 }
             }
@@ -646,7 +781,7 @@ sealed class TranscriptionClient(AppConfig config)
     {
         var apiKey = config.ResolveApiKey("XAI_API_KEY");
         using var form = new MultipartFormDataContent();
-        form.Add(new StringContent(config.Language), "language");
+        AddLanguageIfConfigured(form, "language");
         form.Add(new ByteArrayContent(await File.ReadAllBytesAsync(wavPath))
         {
             Headers = { ContentType = new MediaTypeHeaderValue("audio/wav") }
@@ -685,6 +820,22 @@ sealed class TranscriptionClient(AppConfig config)
         var body = await response.Content.ReadAsStringAsync();
         EnsureSuccess(response, body);
         return JsonText(body, "text");
+    }
+
+    private void AddLanguageIfConfigured(MultipartFormDataContent form, string fieldName)
+    {
+        if (!string.IsNullOrWhiteSpace(config.Language) &&
+            !config.Language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            form.Add(new StringContent(config.Language), fieldName);
+        }
+    }
+
+    private string LanguagePromptInstruction()
+    {
+        return string.IsNullOrWhiteSpace(config.Language) || config.Language.Equals("auto", StringComparison.OrdinalIgnoreCase)
+            ? "Detect the spoken language automatically."
+            : $"Language hint: {config.Language}.";
     }
 
     private static void EnsureSuccess(HttpResponseMessage response, string body)
@@ -1762,7 +1913,7 @@ sealed class SettingsForm : Form
             Config = new AppConfig(
                 provider,
                 string.IsNullOrWhiteSpace(sttModelBox.Text) ? AppConfig.DefaultModelFor(provider) : sttModelBox.Text.Trim(),
-                string.IsNullOrWhiteSpace(languageBox.Text) ? "de" : languageBox.Text.Trim(),
+                string.IsNullOrWhiteSpace(languageBox.Text) ? "auto" : languageBox.Text.Trim(),
                 sttApiKey,
                 openAiAdminKeyBox.Text.Trim(),
                 apiKeys,
@@ -2438,6 +2589,180 @@ sealed class StatusIconControl : Control
     }
 }
 
+static class MenuIconFactory
+{
+    private const int IconSize = 16;
+
+    public static Image App()
+    {
+        using var appIcon = IconFactory.LoadAppIcon();
+        using var source = appIcon.ToBitmap();
+        return new Bitmap(source, new Size(IconSize, IconSize));
+    }
+
+    public static Image Status(bool recording, bool transcribing)
+    {
+        var color = recording
+            ? Color.FromArgb(220, 56, 56)
+            : transcribing
+                ? Color.FromArgb(37, 99, 235)
+                : Color.FromArgb(22, 163, 74);
+        return Draw((graphics, _, _, _) =>
+        {
+            using var brush = new SolidBrush(color);
+            graphics.FillEllipse(brush, 4, 4, 8, 8);
+            using var pen = new Pen(Color.FromArgb(80, 0, 0, 0));
+            graphics.DrawEllipse(pen, 4, 4, 8, 8);
+        });
+    }
+
+    public static Image Mic()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.FillRoundedRectangle(accent, new Rectangle(6, 2, 4, 8), 2);
+            graphics.DrawArc(pen, 4, 6, 8, 6, 0, 180);
+            graphics.DrawLine(pen, 8, 12, 8, 14);
+            graphics.DrawLine(pen, 5, 14, 11, 14);
+        });
+    }
+
+    public static Image Stop()
+    {
+        return Draw((graphics, _, _, _) =>
+        {
+            using var brush = new SolidBrush(Color.FromArgb(220, 56, 56));
+            graphics.FillRectangle(brush, 4, 4, 8, 8);
+        });
+    }
+
+    public static Image Summary()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.FillRectangle(accent, 3, 4, 3, 3);
+            graphics.DrawLine(pen, 7, 5, 13, 5);
+            graphics.FillRectangle(accent, 3, 8, 3, 3);
+            graphics.DrawLine(pen, 7, 9, 13, 9);
+            graphics.DrawLine(pen, 3, 13, 13, 13);
+        });
+    }
+
+    public static Image Providers()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.DrawLine(pen, 3, 5, 13, 5);
+            graphics.FillEllipse(accent, 5, 3, 4, 4);
+            graphics.DrawLine(pen, 3, 10, 13, 10);
+            graphics.FillEllipse(accent, 9, 8, 4, 4);
+        });
+    }
+
+    public static Image ProviderOption(string provider)
+    {
+        var color = provider.ToLowerInvariant() switch
+        {
+            "openai" => Color.FromArgb(16, 163, 127),
+            "elevenlabs" => Color.FromArgb(17, 24, 39),
+            "gemini" => Color.FromArgb(99, 102, 241),
+            "anthropic" => Color.FromArgb(214, 119, 59),
+            "xai" => Color.FromArgb(82, 82, 91),
+            "localai" => Color.FromArgb(37, 99, 235),
+            _ => Color.FromArgb(80, 90, 110)
+        };
+        return Draw((graphics, _, _, _) =>
+        {
+            using var brush = new SolidBrush(color);
+            graphics.FillEllipse(brush, 4, 4, 8, 8);
+        });
+    }
+
+    public static Image Billing()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.DrawLine(pen, 3, 13, 13, 13);
+            graphics.FillRectangle(accent, 4, 9, 2, 4);
+            graphics.FillRectangle(accent, 7, 6, 2, 7);
+            graphics.FillRectangle(accent, 10, 3, 2, 10);
+        });
+    }
+
+    public static Image BrowserExtension()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.DrawRoundedRectangle(pen, new Rectangle(3, 4, 10, 9), 2);
+            graphics.FillEllipse(accent, 6, 2, 4, 4);
+            graphics.FillEllipse(accent, 11, 7, 3, 3);
+        });
+    }
+
+    public static Image ExternalLink()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.DrawRectangle(pen, 3, 6, 7, 7);
+            graphics.DrawLine(pen, 8, 4, 12, 4);
+            graphics.DrawLine(pen, 12, 4, 12, 8);
+            using var arrowPen = new Pen(accent.Color, 2);
+            graphics.DrawLine(arrowPen, 8, 8, 12, 4);
+        });
+    }
+
+    public static Image Settings()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.DrawEllipse(pen, 4, 4, 8, 8);
+            graphics.FillEllipse(accent, 7, 7, 2, 2);
+            graphics.DrawLine(pen, 8, 1, 8, 4);
+            graphics.DrawLine(pen, 8, 12, 8, 15);
+            graphics.DrawLine(pen, 1, 8, 4, 8);
+            graphics.DrawLine(pen, 12, 8, 15, 8);
+        });
+    }
+
+    public static Image ConfigFile()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            graphics.DrawRectangle(pen, 4, 2, 8, 12);
+            graphics.DrawLine(pen, 9, 2, 12, 5);
+            graphics.DrawLine(pen, 9, 2, 9, 5);
+            graphics.DrawLine(pen, 9, 5, 12, 5);
+            using var linePen = new Pen(accent.Color, 2);
+            graphics.DrawLine(linePen, 6, 8, 10, 8);
+            graphics.DrawLine(linePen, 6, 11, 10, 11);
+        });
+    }
+
+    public static Image Power()
+    {
+        return Draw((graphics, pen, _, accent) =>
+        {
+            using var powerPen = new Pen(accent.Color, 2);
+            graphics.DrawArc(pen, 4, 4, 8, 8, 35, 290);
+            graphics.DrawLine(powerPen, 8, 2, 8, 8);
+        });
+    }
+
+    private static Bitmap Draw(Action<Graphics, Pen, SolidBrush, SolidBrush> draw)
+    {
+        var bitmap = new Bitmap(IconSize, IconSize);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        graphics.Clear(Color.Transparent);
+        using var pen = new Pen(Color.FromArgb(80, 88, 100), 1.3f);
+        using var fill = new SolidBrush(Color.FromArgb(80, 88, 100));
+        using var accent = new SolidBrush(Color.FromArgb(38, 132, 255));
+        draw(graphics, pen, fill, accent);
+        return bitmap;
+    }
+}
+
 static class IconFactory
 {
     public static Icon LoadAppIcon()
@@ -2469,16 +2794,28 @@ static class IconFactory
 
 static class GraphicsExtensions
 {
+    public static void DrawRoundedRectangle(this Graphics graphics, Pen pen, Rectangle bounds, int radius)
+    {
+        using var path = CreateRoundedRectanglePath(bounds, radius);
+        graphics.DrawPath(pen, path);
+    }
+
     public static void FillRoundedRectangle(this Graphics graphics, Brush brush, Rectangle bounds, int radius)
     {
-        using var path = new GraphicsPath();
+        using var path = CreateRoundedRectanglePath(bounds, radius);
+        graphics.FillPath(brush, path);
+    }
+
+    private static GraphicsPath CreateRoundedRectanglePath(Rectangle bounds, int radius)
+    {
+        var path = new GraphicsPath();
         var diameter = radius * 2;
         path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
         path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
         path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
         path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
         path.CloseFigure();
-        graphics.FillPath(brush, path);
+        return path;
     }
 }
 
@@ -2747,6 +3084,33 @@ static class BrowserExtensionInstaller
         }
 
         return opened;
+    }
+
+    public static IReadOnlyList<string> GetAvailableBrowserSetupTargets()
+    {
+        return BrowserTargets()
+            .Where(target => target.Executable is not null)
+            .Select(target => target.Name)
+            .ToArray();
+    }
+
+    public static bool OpenBrowserSetupPage(string browserName)
+    {
+        var target = BrowserTargets()
+            .FirstOrDefault(candidate => candidate.Name.Equals(browserName, StringComparison.OrdinalIgnoreCase));
+        if (target?.Executable is null)
+        {
+            return false;
+        }
+
+        var info = new ProcessStartInfo
+        {
+            FileName = target.Executable,
+            UseShellExecute = false
+        };
+        info.ArgumentList.Add(target.Url);
+        Process.Start(info);
+        return true;
     }
 
     private static string FindChromiumExtensionDirectory()

@@ -355,7 +355,7 @@ static class NativeHostApp
         throw new InvalidOperationException($"API error {(int)response.StatusCode} {response.ReasonPhrase}: {detail}");
     }
 
-    private static string FirstNonEmpty(params string[] values)
+    public static string FirstNonEmpty(params string[] values)
     {
         return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";
     }
@@ -378,7 +378,7 @@ static class NativeHostApp
             : "";
     }
 
-    private const string DefaultUrlSummaryPrompt =
+    public const string DefaultUrlSummaryPrompt =
         "Summarize the provided webpage content.\n\n" +
         "Rules:\n" +
         "- Use ONLY information present in the content.\n" +
@@ -440,7 +440,9 @@ sealed class LazyConfig
             Language = ReadString(root, "language", "auto"),
             SummaryProvider = ReadString(root, "summaryProvider", provider.Equals("elevenlabs", StringComparison.OrdinalIgnoreCase) ? "openai" : provider),
             SummaryModels = ReadStringMap(root, "summaryModels"),
-            UrlSummaryPrompt = FirstNonEmpty(ReadString(root, "urlSummaryPrompt", ""), DefaultUrlSummaryPrompt),
+            UrlSummaryPrompt = NativeHostApp.FirstNonEmpty(
+                ReadString(root, "urlSummaryPrompt", ""),
+                NativeHostApp.DefaultUrlSummaryPrompt),
             AppFetchUrl = ReadBool(root, "appFetchUrl", true),
             XaiReasoningEffort = ReadString(root, "xaiReasoningEffort", "none"),
             LocalAiLlmUrl = ReadString(root, "localAiLlmUrl", DefaultLocalAiLlmUrl),
