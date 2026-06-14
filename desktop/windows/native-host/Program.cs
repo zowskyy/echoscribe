@@ -30,6 +30,10 @@ static class Program
 
 static class NativeHostApp
 {
+    private const string LanguageRetryNote =
+        "The previous output did not follow the requested language. " +
+        "Regenerate the summary now and obey the language rule exactly.";
+
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
@@ -76,18 +80,17 @@ static class NativeHostApp
                 ? ""
                 : config.ResolveApiKey(provider);
             var source = await BuildSourceTextAsync(request, config);
-            var prompt = BuildPrompt(config.UrlSummaryPrompt, config.LanguageDirective(request.TargetLanguageCode), source);
-            var systemPrompt = $"You are a precise summarizer. {config.LanguageDirective(request.TargetLanguageCode)} Output only the summary, with no preface or labels.";
+            var languageDirective = config.LanguageDirective(request.TargetLanguageCode);
+            var prompt = BuildPrompt(config.UrlSummaryPrompt, languageDirective, source);
+            var systemPrompt = $"You are a precise summarizer. Follow the language rule exactly. {languageDirective} Output only the summary, with no preface or labels.";
 
-            var summary = provider switch
+            var summary = await GenerateSummaryAsync(provider, apiKey, model, systemPrompt, prompt, config);
+            if (LanguageCheck.NeedsLanguageRetry(summary, request.TargetLanguageCode))
             {
-                "openai" => await SummarizeOpenAiAsync(apiKey, model, systemPrompt, prompt),
-                "gemini" => await SummarizeGeminiAsync(apiKey, model, prompt),
-                "anthropic" => await SummarizeAnthropicAsync(apiKey, model, systemPrompt, prompt),
-                "xai" => await SummarizeXaiAsync(apiKey, model, systemPrompt, prompt, config.XaiReasoningEffort),
-                "localai" => await SummarizeLocalAiAsync(config.LocalAiLlmUrl, model, systemPrompt, prompt),
-                _ => throw new InvalidOperationException($"Unsupported summary provider '{provider}'.")
-            };
+                var retrySystemPrompt = systemPrompt + " This is mandatory: the complete response must be in the requested target language.";
+                var retryPrompt = $"{LanguageRetryNote}\n\n{config.LanguageDirective(request.TargetLanguageCode)}\n\n{prompt}";
+                summary = await GenerateSummaryAsync(provider, apiKey, model, retrySystemPrompt, retryPrompt, config);
+            }
 
             return new SummaryResponse(true, summary.Trim(), provider, model, "");
         }
@@ -216,7 +219,26 @@ static class NativeHostApp
     private static string BuildPrompt(string configPrompt, string languageDirective, string text)
     {
         var basePrompt = string.IsNullOrWhiteSpace(configPrompt) ? DefaultUrlSummaryPrompt : configPrompt.Trim();
-        return $"{basePrompt}\n\n{languageDirective}\n\nText:\n{text}";
+        return $"{languageDirective}\n\n{basePrompt}\n\nText:\n{text}";
+    }
+
+    private static Task<string> GenerateSummaryAsync(
+        string provider,
+        string apiKey,
+        string model,
+        string systemPrompt,
+        string prompt,
+        LazyConfig config)
+    {
+        return provider switch
+        {
+            "openai" => SummarizeOpenAiAsync(apiKey, model, systemPrompt, prompt),
+            "gemini" => SummarizeGeminiAsync(apiKey, model, prompt),
+            "anthropic" => SummarizeAnthropicAsync(apiKey, model, systemPrompt, prompt),
+            "xai" => SummarizeXaiAsync(apiKey, model, systemPrompt, prompt, config.XaiReasoningEffort),
+            "localai" => SummarizeLocalAiAsync(config.LocalAiLlmUrl, model, systemPrompt, prompt),
+            _ => throw new InvalidOperationException($"Unsupported summary provider '{provider}'.")
+        };
     }
 
     private static async Task<string> SummarizeOpenAiAsync(string apiKey, string model, string systemPrompt, string prompt)
@@ -537,13 +559,17 @@ sealed class LazyConfig
 
     public string LanguageDirective(string? requestedCode)
     {
-        var code = string.IsNullOrWhiteSpace(requestedCode) ? Language : requestedCode.Trim();
+        var code = (string.IsNullOrWhiteSpace(requestedCode) ? Language : requestedCode.Trim()).ToLowerInvariant();
         if (!string.IsNullOrWhiteSpace(code) && code != "auto")
         {
-            return $"Language rule: Output MUST be in {LanguageName(code)} (\"{code}\"). Do not use any other language.";
+            return $"Critical language rule: Output MUST be entirely in {LanguageName(code)} (\"{code}\"). " +
+                "Translate the summary into that target language even when the source text uses a different language. " +
+                "Do not use another language except for proper nouns, product names, or short quoted source terms.";
         }
 
-        return "Language rule: Detect the input language and write the summary strictly in that same language. If the input is German, output German; if Spanish, output Spanish. Never switch languages.";
+        return "Critical language rule: Auto means detect the dominant source language and write the summary entirely " +
+            "in that same language. Do not use the browser, operating-system, or configured locale as the output " +
+            "language. If the input is English, output English; if German, output German; if Spanish, output Spanish.";
     }
 
     private static string FindConfigPath()
@@ -674,6 +700,82 @@ sealed class LazyConfig
         return root.TryGetProperty(name, out var value) && value.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? value.GetBoolean()
             : fallback;
+    }
+}
+
+static class LanguageCheck
+{
+    public static bool NeedsLanguageRetry(string text, string? requestedCode)
+    {
+        var code = (requestedCode ?? "").Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(code) || code == "auto")
+        {
+            return false;
+        }
+
+        if (code == "en")
+        {
+            return MarkerScore(text, "de") >= 4 && MarkerScore(text, "en") <= 2;
+        }
+
+        if (code == "de")
+        {
+            return MarkerScore(text, "en") >= 4 && MarkerScore(text, "de") <= 2;
+        }
+
+        return false;
+    }
+
+    private static int MarkerScore(string text, string code)
+    {
+        var lowered = $" {text.ToLowerInvariant()} ";
+        var markers = code switch
+        {
+            "de" => new[]
+            {
+                " der ",
+                " die ",
+                " das ",
+                " und ",
+                " ist ",
+                " sind ",
+                " wurde ",
+                " werden ",
+                " mit ",
+                " für ",
+                " ueber ",
+                " über ",
+                " nicht ",
+                " eine ",
+                " einen ",
+                " im ",
+                " auf ",
+                " dass ",
+                " berichtet ",
+            },
+            "en" => new[]
+            {
+                " the ",
+                " and ",
+                " is ",
+                " are ",
+                " was ",
+                " were ",
+                " with ",
+                " for ",
+                " about ",
+                " not ",
+                " a ",
+                " an ",
+                " in ",
+                " on ",
+                " that ",
+                " reports ",
+            },
+            _ => []
+        };
+
+        return markers.Sum(marker => lowered.Split(marker).Length - 1);
     }
 }
 
