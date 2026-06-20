@@ -114,6 +114,7 @@ Copy-Item -LiteralPath $appsettingsTemplate -Destination (Join-Path $publishDir 
 New-Item -ItemType Directory -Force -Path $publishScriptsDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'install.cmd') -Destination (Join-Path $publishDir 'install.cmd') -Force
 Copy-Item -LiteralPath (Join-Path $scriptRoot 'install-echoscribe.ps1') -Destination (Join-Path $publishScriptsDir 'install-echoscribe.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $scriptRoot 'install-local-ai-wsl.ps1') -Destination (Join-Path $publishScriptsDir 'install-local-ai-wsl.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $publishDir 'README-Windows.md') -Force
 
 if (Test-Path -LiteralPath $packagePath) {

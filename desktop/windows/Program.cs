@@ -1067,8 +1067,8 @@ sealed record AppConfig(
     Hotkey Hotkey)
 {
     public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-    public const string DefaultLocalAiLlmUrl = "http://192.168.178.20:11434/api/chat";
-    public const string DefaultLocalAiWhisperUrl = "http://192.168.178.20:8000/v1/audio/transcriptions";
+    public const string DefaultLocalAiLlmUrl = "http://127.0.0.1:11434/api/chat";
+    public const string DefaultLocalAiWhisperUrl = "http://127.0.0.1:8000/v1/audio/transcriptions";
     public const string DefaultUrlSummaryPrompt =
         "Summarize the provided webpage content.\n\n" +
         "Rules:\n" +
@@ -1079,8 +1079,9 @@ sealed record AppConfig(
         "- Remove filler and marketing language.\n" +
         "- Adapt to the content type automatically.\n\n" +
         "Structure:\n" +
-        "- If the content contains multiple distinct aspects (e.g. results, ingredients, steps, features, findings), you MAY organize the summary into 2-4 short sections.\n" +
-        "- Each section may have a short \"##\" heading and one fitting emoji.\n" +
+        "- If the content contains multiple distinct aspects (e.g. results, ingredients, steps, features, findings), organize the summary into 2-4 short sections.\n" +
+        "- Each section heading MUST be formatted as \"## <emoji> <1-3 word title>\".\n" +
+        "- Do not write a section heading without an emoji.\n" +
         "- Keep section titles very short (1-3 words).\n" +
         "- Each section should contain one concise sentence.\n" +
         "- If the content is simple, write a short paragraph instead (1-3 sentences).\n\n" +
@@ -1107,7 +1108,7 @@ sealed record AppConfig(
             "gemini" => "gemini-3.5-flash",
             "anthropic" => "claude-sonnet-4-6",
             "xai" => "grok-4.3",
-            "localai" => "qwen2.5:3b",
+            "localai" => "qwen2.5:7b",
             _ => "gpt-5.4-mini"
         };
     }
@@ -1161,8 +1162,8 @@ sealed record AppConfig(
               "summaryModels": {},
               "urlSummaryPrompt": "",
               "appFetchUrl": true,
-              "localAiLlmUrl": "http://192.168.178.20:11434/api/chat",
-              "localAiWhisperUrl": "http://192.168.178.20:8000/v1/audio/transcriptions",
+              "localAiLlmUrl": "http://127.0.0.1:11434/api/chat",
+              "localAiWhisperUrl": "http://127.0.0.1:8000/v1/audio/transcriptions",
               "hotkey": "Alt+A"
             }
             """);
@@ -1736,7 +1737,7 @@ sealed class SettingsForm : Form
     private TabPage BuildSummaryTab()
     {
         var tab = new TabPage("Web Summary");
-        var layout = CreateFormLayout(7);
+        var layout = CreateFormLayout(8);
         AddHeader(layout, 0, "Browser summaries");
         AddRow(layout, 1, "Summary-Provider", summaryProviderBox);
         AddRow(layout, 2, "Summary model", summaryModelBox);
@@ -1746,6 +1747,23 @@ sealed class SettingsForm : Form
         AddRow(layout, 5, "URL-Prompt", urlSummaryPromptBox);
         layout.RowStyles[5].SizeType = SizeType.Percent;
         layout.RowStyles[5].Height = 100;
+        var promptButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            Margin = new Padding(0)
+        };
+        var defaultPromptButton = new Button
+        {
+            Text = "Default prompt",
+            AutoSize = true,
+            Height = 28
+        };
+        defaultPromptButton.Click += (_, _) => urlSummaryPromptBox.Text = AppConfig.DefaultUrlSummaryPrompt;
+        promptButtons.Controls.Add(defaultPromptButton);
+        layout.Controls.Add(new Label(), 0, 6);
+        layout.Controls.Add(promptButtons, 1, 6);
         var hint = new Label
         {
             Text = "PoC mode: Local AI uses Ollama /api/chat for summaries. Keep it on a trusted local network or VPN.",
@@ -1753,8 +1771,8 @@ sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        layout.Controls.Add(new Label(), 0, 6);
-        layout.Controls.Add(hint, 1, 6);
+        layout.Controls.Add(new Label(), 0, 7);
+        layout.Controls.Add(hint, 1, 7);
         tab.Controls.Add(layout);
         return tab;
     }

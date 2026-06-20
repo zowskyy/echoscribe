@@ -39,7 +39,7 @@ Speech-to-text providers:
 - `elevenlabs`: `ELEVENLABS_API_KEY`, default model `scribe_v2`
 - `gemini`: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, default model `gemini-3.5-flash`
 - `xai`: `XAI_API_KEY`, uses `https://api.x.ai/v1/stt`
-- `localai`: Local AI Whisper-compatible endpoint, default URL `http://192.168.178.20:8000/v1/audio/transcriptions`, default model `whisper-1`
+- `localai`: Local AI Whisper-compatible endpoint, default URL `http://127.0.0.1:8000/v1/audio/transcriptions`, default model `whisper-1`
 
 Summary providers:
 
@@ -47,11 +47,16 @@ Summary providers:
 - `gemini`: `generateContent`, default summary model `gemini-3.5-flash`
 - `anthropic`: Messages API, default summary model `claude-sonnet-4-6`
 - `xai`: OpenAI-compatible Chat Completions, default summary model `grok-4.3`
-- `localai`: Ollama-compatible `/api/chat`, default URL `http://192.168.178.20:11434/api/chat`, default model `qwen2.5:3b`
+- `localai`: Ollama-compatible `/api/chat`, default URL `http://127.0.0.1:11434/api/chat`, default model `qwen2.5:7b`
 
 Claude/Anthropic is implemented for text summaries only. This app does not support Claude speech-to-text or text-to-speech unless Anthropic ships suitable audio models and the app is extended for them.
 
-Local AI expects an Ollama-compatible chat API with `model`, `stream: false`, and `messages`; EchoScribe reads `message.content`. For STT it sends multipart `file`, `model`, `response_format=json`, and optional `language`, then reads `text`. Example Ollama models: `qwen2.5:3b`, `gemma3`, `deepseek-r1`. For PoC use, keep endpoints on a trusted local network or VPN; EchoScribe does not add authentication to Local AI requests.
+Local AI expects an Ollama-compatible chat API with `model`, `stream: false`, `think: false`, and `messages`; EchoScribe reads `message.content`. For STT it sends multipart `file`, `model`, `response_format=json`, and optional `language`, then reads `text`. Example Ollama models: `qwen2.5:7b`, `gemma4:e4b`, `qwen2.5:14b`, `gemma3`, `deepseek-r1`. For PoC use, keep endpoints on a trusted local network or VPN; EchoScribe does not add authentication to Local AI requests.
+
+During `install.cmd`, the Windows installer can optionally configure Local AI:
+
+- Local Whisper Large (CUDA): installs/starts a Faster-Whisper server in WSL under `${XDG_DATA_HOME:-$HOME/.local/share}/echoscribe/local-ai`, configures STT provider `localai`, model `whisper-large-v3`, and `localAiWhisperUrl` on port `8000`.
+- Local Ollama summaries: detects NVIDIA GPU/VRAM and system RAM, then shows a color-coded model list for different PCs, including CPU-only/iGPU systems. The list spans smaller/faster 8B-class options through compact Gemma and stronger 14B, 26B/32B, and large 70B/72B-class models. It configures summary provider `localai`, sets `localAiLlmUrl` on port `11434`, and can download/check the selected model. Green means comfortable, yellow means tight, and red means likely too large or slow for the detected hardware. The default recommendation is `qwen2.5:7b`; larger 32B/31B models are marked as tight and 70B/72B models as likely too large.
 
 Install from a GitHub release:
 

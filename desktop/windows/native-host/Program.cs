@@ -33,6 +33,9 @@ static class NativeHostApp
     private const string LanguageRetryNote =
         "The previous output did not follow the requested language. " +
         "Regenerate the summary now and obey the language rule exactly.";
+    private const string LocalAiFormattingRule =
+        "For sectioned summaries, every heading MUST be formatted exactly as \"## <emoji> <1-3 word title>\". " +
+        "Never write a section heading without an emoji.";
 
     public static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -83,6 +86,11 @@ static class NativeHostApp
             var languageDirective = config.LanguageDirective(request.TargetLanguageCode);
             var prompt = BuildPrompt(config.UrlSummaryPrompt, languageDirective, source);
             var systemPrompt = $"You are a precise summarizer. Follow the language rule exactly. {languageDirective} Output only the summary, with no preface or labels.";
+            if (provider.Equals("localai", StringComparison.OrdinalIgnoreCase))
+            {
+                systemPrompt += $" {LocalAiFormattingRule}";
+                prompt = $"{LocalAiFormattingRule}\n\n{prompt}";
+            }
 
             var summary = await GenerateSummaryAsync(provider, apiKey, model, systemPrompt, prompt, config);
             if (LanguageCheck.NeedsLanguageRetry(summary, request.TargetLanguageCode))
@@ -349,6 +357,7 @@ static class NativeHostApp
         {
             model,
             stream = false,
+            think = false,
             messages = new object[]
             {
                 new { role = "system", content = systemPrompt },
@@ -410,8 +419,9 @@ static class NativeHostApp
         "- Remove filler and marketing language.\n" +
         "- Adapt to the content type automatically.\n\n" +
         "Structure:\n" +
-        "- If the content contains multiple distinct aspects (e.g. results, ingredients, steps, features, findings), you MAY organize the summary into 2-4 short sections.\n" +
-        "- Each section may have a short \"##\" heading and one fitting emoji.\n" +
+        "- If the content contains multiple distinct aspects (e.g. results, ingredients, steps, features, findings), organize the summary into 2-4 short sections.\n" +
+        "- Each section heading MUST be formatted as \"## <emoji> <1-3 word title>\".\n" +
+        "- Do not write a section heading without an emoji.\n" +
         "- Keep section titles very short (1-3 words).\n" +
         "- Each section should contain one concise sentence.\n" +
         "- If the content is simple, write a short paragraph instead (1-3 sentences).\n\n" +
@@ -420,7 +430,7 @@ static class NativeHostApp
 
 sealed class LazyConfig
 {
-    public const string DefaultLocalAiLlmUrl = "http://192.168.178.20:11434/api/chat";
+    public const string DefaultLocalAiLlmUrl = "http://127.0.0.1:11434/api/chat";
     public static readonly string[] SummaryProviders = ["openai", "gemini", "anthropic", "xai", "localai"];
 
     public required string ConfigPath { get; init; }
@@ -499,7 +509,7 @@ sealed class LazyConfig
             "gemini" => "gemini-3.5-flash",
             "anthropic" => "claude-sonnet-4-6",
             "xai" => "grok-4.3",
-            "localai" => "qwen2.5:3b",
+            "localai" => "qwen2.5:7b",
             _ => "gpt-5.4-mini"
         };
     }
