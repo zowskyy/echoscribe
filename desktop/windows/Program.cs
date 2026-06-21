@@ -798,6 +798,12 @@ sealed class TranscriptionClient(AppConfig config)
 
     private async Task<string> TranscribeLocalAiAsync(string wavPath)
     {
+        if (!string.IsNullOrWhiteSpace(config.LocalWhisperCppExe) &&
+            !string.IsNullOrWhiteSpace(config.LocalWhisperCppModelPath))
+        {
+            return await TranscribeWhisperCppAsync(wavPath);
+        }
+
         if (string.IsNullOrWhiteSpace(config.LocalAiWhisperUrl))
         {
             throw new InvalidOperationException("Local AI Whisper URL is not configured.");
@@ -820,6 +826,109 @@ sealed class TranscriptionClient(AppConfig config)
         var body = await response.Content.ReadAsStringAsync();
         EnsureSuccess(response, body);
         return JsonText(body, "text");
+    }
+
+    private async Task<string> TranscribeWhisperCppAsync(string wavPath)
+    {
+        var exePath = config.LocalWhisperCppExe.Trim();
+        var modelPath = config.LocalWhisperCppModelPath.Trim();
+        if (!File.Exists(exePath))
+        {
+            throw new InvalidOperationException($"whisper.cpp executable was not found: {exePath}");
+        }
+        if (!File.Exists(modelPath))
+        {
+            throw new InvalidOperationException($"whisper.cpp model was not found: {modelPath}");
+        }
+
+        var outputBase = Path.Combine(Path.GetTempPath(), $"echoscribe-whisper-{Guid.NewGuid():N}");
+        var processInfo = new ProcessStartInfo
+        {
+            FileName = exePath,
+            WorkingDirectory = Path.GetDirectoryName(exePath) ?? AppContext.BaseDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+        processInfo.ArgumentList.Add("-m");
+        processInfo.ArgumentList.Add(modelPath);
+        processInfo.ArgumentList.Add("-f");
+        processInfo.ArgumentList.Add(wavPath);
+        processInfo.ArgumentList.Add("-otxt");
+        processInfo.ArgumentList.Add("-of");
+        processInfo.ArgumentList.Add(outputBase);
+        if (!string.IsNullOrWhiteSpace(config.Language) && !config.Language.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            processInfo.ArgumentList.Add("-l");
+            processInfo.ArgumentList.Add(config.Language);
+        }
+
+        using var process = new Process { StartInfo = processInfo };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException("whisper.cpp could not be started.");
+        }
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // Process may have exited between timeout and Kill().
+            }
+            throw new TimeoutException("whisper.cpp transcription timed out after 10 minutes.");
+        }
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+        if (process.ExitCode != 0)
+        {
+            var detail = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+            detail = detail.Length > 900 ? detail[..900] : detail;
+            throw new InvalidOperationException($"whisper.cpp failed with exit code {process.ExitCode}: {detail}");
+        }
+
+        try
+        {
+            var outputFile = Directory
+                .GetFiles(Path.GetDirectoryName(outputBase) ?? Path.GetTempPath(), $"{Path.GetFileName(outputBase)}*.txt")
+                .OrderBy(path => path.Length)
+                .FirstOrDefault();
+            var text = outputFile is not null && File.Exists(outputFile)
+                ? await File.ReadAllTextAsync(outputFile)
+                : stdout;
+            text = text.Trim();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                throw new InvalidOperationException("whisper.cpp returned an empty transcript.");
+            }
+            return text;
+        }
+        finally
+        {
+            foreach (var file in Directory.GetFiles(Path.GetDirectoryName(outputBase) ?? Path.GetTempPath(), $"{Path.GetFileName(outputBase)}*"))
+            {
+                try
+                {
+                    File.Delete(file);
+                }
+                catch
+                {
+                    // Temporary output cleanup is best effort.
+                }
+            }
+        }
     }
 
     private void AddLanguageIfConfigured(MultipartFormDataContent form, string fieldName)
@@ -1064,6 +1173,8 @@ sealed record AppConfig(
     bool AppFetchUrl,
     string LocalAiLlmUrl,
     string LocalAiWhisperUrl,
+    string LocalWhisperCppExe,
+    string LocalWhisperCppModelPath,
     Hotkey Hotkey)
 {
     public static string ConfigPath => Path.Combine(AppContext.BaseDirectory, "appsettings.json");
@@ -1164,6 +1275,8 @@ sealed record AppConfig(
               "appFetchUrl": true,
               "localAiLlmUrl": "http://127.0.0.1:11434/api/chat",
               "localAiWhisperUrl": "http://127.0.0.1:8000/v1/audio/transcriptions",
+              "localWhisperCppExe": "",
+              "localWhisperCppModelPath": "",
               "hotkey": "Alt+A"
             }
             """);
@@ -1206,6 +1319,8 @@ sealed record AppConfig(
             ReadBool(root, "appFetchUrl", true),
             ReadString(root, "localAiLlmUrl", DefaultLocalAiLlmUrl),
             ReadString(root, "localAiWhisperUrl", DefaultLocalAiWhisperUrl),
+            ReadString(root, "localWhisperCppExe", ""),
+            ReadString(root, "localWhisperCppModelPath", ""),
             Hotkey.Parse(ReadString(root, "hotkey", "Alt+A")));
     }
 
@@ -1232,6 +1347,8 @@ sealed record AppConfig(
             appFetchUrl = AppFetchUrl,
             localAiLlmUrl = LocalAiLlmUrl,
             localAiWhisperUrl = LocalAiWhisperUrl,
+            localWhisperCppExe = LocalWhisperCppExe,
+            localWhisperCppModelPath = LocalWhisperCppModelPath,
             hotkey = Hotkey.Display
         };
         var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
@@ -1305,6 +1422,8 @@ sealed record AppConfig(
             AppFetchUrl,
             LocalAiLlmUrl,
             LocalAiWhisperUrl,
+            LocalWhisperCppExe,
+            LocalWhisperCppModelPath,
             Hotkey);
     }
 
@@ -1579,6 +1698,8 @@ sealed class SettingsForm : Form
     private readonly ComboBox sttProviderBox = new();
     private readonly TextBox sttModelBox = new();
     private readonly TextBox localAiWhisperUrlBox = new();
+    private readonly TextBox localWhisperCppExeBox = new();
+    private readonly TextBox localWhisperCppModelPathBox = new();
     private readonly TextBox languageBox = new();
     private readonly ComboBox summaryProviderBox = new();
     private readonly TextBox summaryModelBox = new();
@@ -1616,7 +1737,7 @@ sealed class SettingsForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(720, 640);
+        ClientSize = new Size(720, 700);
         Font = new Font("Segoe UI", 9F);
 
         sttProviderBox.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -1626,6 +1747,8 @@ sealed class SettingsForm : Form
             : "openai";
         sttModelBox.Text = string.IsNullOrWhiteSpace(config.Model) ? AppConfig.DefaultModelFor(config.Provider) : config.Model;
         localAiWhisperUrlBox.Text = string.IsNullOrWhiteSpace(config.LocalAiWhisperUrl) ? AppConfig.DefaultLocalAiWhisperUrl : config.LocalAiWhisperUrl;
+        localWhisperCppExeBox.Text = config.LocalWhisperCppExe;
+        localWhisperCppModelPathBox.Text = config.LocalWhisperCppModelPath;
         languageBox.Text = config.Language;
         openAiAdminKeyBox.Text = config.OpenAiAdminKey ?? "";
         openAiAdminKeyBox.UseSystemPasswordChar = true;
@@ -1721,15 +1844,17 @@ sealed class SettingsForm : Form
     private TabPage BuildAudioTab()
     {
         var tab = new TabPage("Audio");
-        var layout = CreateFormLayout(7);
+        var layout = CreateFormLayout(9);
         AddHeader(layout, 0, "Speech-to-Text");
         AddRow(layout, 1, "STT-Provider", sttProviderBox);
         AddRow(layout, 2, "STT model", sttModelBox);
         AddRow(layout, 3, "Local AI Whisper URL", localAiWhisperUrlBox);
-        AddRow(layout, 4, "Language", languageBox);
-        AddRow(layout, 5, "Hotkey", hotkeyBox);
-        layout.Controls.Add(new Label(), 0, 6);
-        layout.Controls.Add(hotkeyStatusLabel, 1, 6);
+        AddRow(layout, 4, "Whisper.cpp exe", localWhisperCppExeBox);
+        AddRow(layout, 5, "Whisper.cpp model", localWhisperCppModelPathBox);
+        AddRow(layout, 6, "Language", languageBox);
+        AddRow(layout, 7, "Hotkey", hotkeyBox);
+        layout.Controls.Add(new Label(), 0, 8);
+        layout.Controls.Add(hotkeyStatusLabel, 1, 8);
         tab.Controls.Add(layout);
         return tab;
     }
@@ -1943,6 +2068,8 @@ sealed class SettingsForm : Form
                 appFetchUrlBox.Checked,
                 string.IsNullOrWhiteSpace(localAiLlmUrlBox.Text) ? AppConfig.DefaultLocalAiLlmUrl : localAiLlmUrlBox.Text.Trim(),
                 string.IsNullOrWhiteSpace(localAiWhisperUrlBox.Text) ? AppConfig.DefaultLocalAiWhisperUrl : localAiWhisperUrlBox.Text.Trim(),
+                localWhisperCppExeBox.Text.Trim(),
+                localWhisperCppModelPathBox.Text.Trim(),
                 Hotkey.Parse(string.IsNullOrWhiteSpace(hotkeyBox.Text) ? "Alt+A" : hotkeyBox.Text.Trim()));
             Config.Save();
         }

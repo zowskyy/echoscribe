@@ -33,7 +33,7 @@ EchoScribe is a privacy-first, zero-backend Flutter application designed for use
 ### ✍️ Smart Summarization
 - **Audio • Text • URL:** Summarize everything in one tap.
 - **Local URL Extraction:** A privacy-first mechanism extracts web content directly on your device, bypassing paywalls and bot-detection while keeping your browsing private. Mandatory for Claude 🦀 and Grok 𝕏.
-- **Local AI Provider:** Use an Ollama-compatible `/api/chat` endpoint for summaries/translations and an OpenAI-compatible Whisper endpoint for STT. Defaults are `qwen2.5:7b` and `whisper-1`; local model names remain editable.
+- **Local AI Provider:** Use an Ollama-compatible `/api/chat` endpoint for summaries/translations and an OpenAI-compatible Whisper endpoint or Windows whisper.cpp for STT. Defaults are `qwen2.5:7b` and `whisper-1`; local model names remain editable.
 - **Custom Prompts:** Fine-tune how your summaries look and feel in the settings.
 
 ### 🚀 Pro Mode & Models
@@ -58,7 +58,7 @@ To use EchoScribe, you'll need at least one API key:
 - **Google Gemini:** [Get API Key](https://aistudio.google.com/app/apikey)
 - **Anthropic Claude:** [Get API Key](https://console.anthropic.com/settings/keys)
 - **xAI Grok:** [Get API Key](https://console.x.ai/)
-- **Local AI:** Configure your own Ollama endpoint such as `http://host:11434/api/chat` and a Whisper-compatible endpoint such as `http://host:8000/v1/audio/transcriptions`. Example local LLMs include `qwen2.5:7b`, `gemma4:e4b`, `gemma3`, and `deepseek-r1`.
+- **Local AI:** Configure your own Ollama endpoint such as `http://host:11434/api/chat` and a Whisper-compatible endpoint such as `http://host:8000/v1/audio/transcriptions`. The Windows companion can also install Windows whisper.cpp and call it directly for local speech-to-text. Example local LLMs include `qwen2.5:7b`, `gemma4:e4b`, `gemma3`, and `deepseek-r1`.
 
 *Tip: Set a usage limit in your AI provider's dashboard to keep full control over your costs. For Local AI PoC use, keep endpoints on a trusted local network or VPN; EchoScribe does not add authentication to Local AI requests.*
 
@@ -90,9 +90,16 @@ The installer is per-user and does not require administrator rights. It can:
 
 - install EchoScribe to `%LOCALAPPDATA%\EchoScribe` or a folder you choose,
 - enable or disable Windows autostart,
+- create a Start Menu shortcut,
 - register the Native Messaging host for Chrome, Edge, Brave, Chromium, and Firefox,
+- optionally install Windows whisper.cpp for local speech-to-text, with CUDA only when suitable NVIDIA support is already present,
+- optionally install Ollama for Windows or configure an existing Ollama service and check/download the selected model,
 - open the browser extension folders and browser setup pages,
 - start EchoScribe after setup.
+
+The standard Windows install does not require WSL, CUDA, or Ollama. If you choose Local AI, setup can install Ollama for Windows and whisper.cpp; it does not install WSL or NVIDIA CUDA drivers/toolkits.
+
+To uninstall, run `uninstall.cmd` from the extracted Windows package or the installed EchoScribe folder.
 
 Browser extensions are loaded manually because browsers require explicit user action:
 
@@ -113,7 +120,9 @@ cd EchoScribe-Linux-GNOME-<version>/linux
 The wizard is intended for Debian-based GNOME systems. It installs dependencies,
 creates the Python environment, writes local config, stores provider keys in the
 configured per-user secret env file, installs the GNOME Shell extension, and can
-register Native Messaging hosts for Chromium-based browsers and Firefox.
+register Native Messaging hosts for Chromium-based browsers and Firefox. It can
+also configure Local Whisper on compatible NVIDIA/CUDA systems and an existing
+Ollama service when available.
 
 Browser extensions are loaded manually:
 
@@ -121,6 +130,8 @@ Browser extensions are loaded manually:
 2. Firefox: open `about:debugging#/runtime/this-firefox` and load `firefox-extension/manifest.json`.
 
 More details: [`desktop/linux/README.md`](desktop/linux/README.md).
+
+To uninstall the Linux/GNOME integration, run `./uninstall.sh` from the extracted package.
 
 ---
 

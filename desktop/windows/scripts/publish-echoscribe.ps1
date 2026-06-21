@@ -113,9 +113,14 @@ Copy-Item -LiteralPath $appsettingsSource -Destination (Join-Path $publishDir 'a
 Copy-Item -LiteralPath $appsettingsTemplate -Destination (Join-Path $publishDir 'appsettings.template.json') -Force
 New-Item -ItemType Directory -Force -Path $publishScriptsDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'install.cmd') -Destination (Join-Path $publishDir 'install.cmd') -Force
+Copy-Item -LiteralPath (Join-Path $root 'uninstall.cmd') -Destination (Join-Path $publishDir 'uninstall.cmd') -Force
 Copy-Item -LiteralPath (Join-Path $scriptRoot 'install-echoscribe.ps1') -Destination (Join-Path $publishScriptsDir 'install-echoscribe.ps1') -Force
+Copy-Item -LiteralPath (Join-Path $scriptRoot 'uninstall-echoscribe.ps1') -Destination (Join-Path $publishScriptsDir 'uninstall-echoscribe.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $scriptRoot 'install-local-ai-wsl.ps1') -Destination (Join-Path $publishScriptsDir 'install-local-ai-wsl.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination (Join-Path $publishDir 'README-Windows.md') -Force
+
+Get-ChildItem -LiteralPath $publishDir -Recurse -Filter '*.pdb' -File -ErrorAction SilentlyContinue |
+    Remove-Item -Force
 
 if (Test-Path -LiteralPath $packagePath) {
     Remove-Item -LiteralPath $packagePath -Force

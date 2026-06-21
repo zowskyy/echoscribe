@@ -29,7 +29,7 @@ Configuration lives in `appsettings.json` next to the executable. The project ca
 
 The settings dialog is split into three tabs:
 
-- `Audio`: STT provider/model, Local AI Whisper URL, language, and hotkey.
+- `Audio`: STT provider/model, Local AI Whisper URL, optional Windows whisper.cpp paths, language, and hotkey.
 - `Web Summary`: browser summary provider/model, Local AI LLM URL, URL extraction, and the URL summary prompt.
 - `API-Keys`: cloud provider keys.
 
@@ -39,7 +39,7 @@ Speech-to-text providers:
 - `elevenlabs`: `ELEVENLABS_API_KEY`, default model `scribe_v2`
 - `gemini`: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, default model `gemini-3.5-flash`
 - `xai`: `XAI_API_KEY`, uses `https://api.x.ai/v1/stt`
-- `localai`: Local AI Whisper-compatible endpoint, default URL `http://127.0.0.1:8000/v1/audio/transcriptions`, default model `whisper-1`
+- `localai`: Local AI Whisper-compatible endpoint, or Windows whisper.cpp when configured by setup. The default HTTP URL is `http://127.0.0.1:8000/v1/audio/transcriptions`; the default HTTP model is `whisper-1`.
 
 Summary providers:
 
@@ -51,12 +51,15 @@ Summary providers:
 
 Claude/Anthropic is implemented for text summaries only. This app does not support Claude speech-to-text or text-to-speech unless Anthropic ships suitable audio models and the app is extended for them.
 
-Local AI expects an Ollama-compatible chat API with `model`, `stream: false`, `think: false`, and `messages`; EchoScribe reads `message.content`. For STT it sends multipart `file`, `model`, `response_format=json`, and optional `language`, then reads `text`. Example Ollama models: `qwen2.5:7b`, `gemma4:e4b`, `qwen2.5:14b`, `gemma3`, `deepseek-r1`. For PoC use, keep endpoints on a trusted local network or VPN; EchoScribe does not add authentication to Local AI requests.
+Local AI expects an Ollama-compatible chat API with `model`, `stream: false`, `think: false`, and `messages`; EchoScribe reads `message.content`. For HTTP STT it sends multipart `file`, `model`, `response_format=json`, and optional `language`, then reads `text`. On Windows, setup can instead install Windows whisper.cpp and configure EchoScribe to call `whisper-cli.exe` directly with a local ggml model. Example Ollama models: `qwen2.5:7b`, `gemma4:e4b`, `qwen2.5:14b`, `gemma3`, `deepseek-r1`. For PoC use, keep endpoints on a trusted local network or VPN; EchoScribe does not add authentication to Local AI requests.
 
 During `install.cmd`, the Windows installer can optionally configure Local AI:
 
-- Local Whisper Large (CUDA): installs/starts a Faster-Whisper server in WSL under `${XDG_DATA_HOME:-$HOME/.local/share}/echoscribe/local-ai`, configures STT provider `localai`, model `whisper-large-v3`, and `localAiWhisperUrl` on port `8000`.
-- Local Ollama summaries: detects NVIDIA GPU/VRAM and system RAM, then shows a color-coded model list for different PCs, including CPU-only/iGPU systems. The list spans smaller/faster 8B-class options through compact Gemma and stronger 14B, 26B/32B, and large 70B/72B-class models. It configures summary provider `localai`, sets `localAiLlmUrl` on port `11434`, and can download/check the selected model. Green means comfortable, yellow means tight, and red means likely too large or slow for the detected hardware. The default recommendation is `qwen2.5:7b`; larger 32B/31B models are marked as tight and 70B/72B models as likely too large.
+- Windows whisper.cpp STT: downloads the current official whisper.cpp Windows release, downloads the selected ggml Whisper model, and writes the `whisper-cli.exe` and model paths into `appsettings.json`. CPU mode is available on a normal Windows install. If an NVIDIA/CUDA-capable driver is detected, setup asks whether to use a CUDA whisper.cpp build; EchoScribe does not install NVIDIA drivers or CUDA itself.
+- Advanced WSL Whisper: only shown as an explicit advanced option when a usable WSL Linux distribution already exists. Standard Windows users do not need WSL.
+- Local Ollama summaries: uses or installs Ollama for Windows on `http://127.0.0.1:11434`, or uses a reachable Ollama API on another host. It detects NVIDIA GPU/VRAM and system RAM, then shows a color-coded model list for different PCs, including CPU-only/iGPU systems. The list spans smaller/faster 8B-class options through compact Gemma and stronger 14B, 26B/32B, and large 70B/72B-class models. It configures summary provider `localai`, sets `localAiLlmUrl` on port `11434`, and can download/check the selected model with `ollama pull`. Green means comfortable, yellow means tight, and red means likely too large or slow for the detected hardware. The default recommendation is `qwen2.5:7b`; larger 32B/31B models are marked as tight and 70B/72B models as likely too large.
+
+The standard Windows install does not require WSL, CUDA, or Ollama. If you choose Local AI summaries, setup can install Ollama for Windows and pull the selected model. It does not install WSL or NVIDIA CUDA drivers/toolkits.
 
 Install from a GitHub release:
 
@@ -66,9 +69,11 @@ Install from a GitHub release:
 4. If setup asks to build EchoScribe, accept the build. The local .NET SDK is installed automatically when needed.
 5. For Chrome, Edge, Brave, or Chromium, enable developer mode on the browser's extensions page and load the installed `chrome-extension` folder shown by setup. For Firefox, use `about:debugging#/runtime/this-firefox` and load the installed `firefox-extension\manifest.json` as a temporary add-on.
 
-The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging hosts, open browser extension setup pages, and start EchoScribe after installation.
+The installer runs per user and does not need administrator rights. The default install folder is `%LOCALAPPDATA%\EchoScribe`. The setup TUI lets you choose the install folder, enable or disable autostart, register the browser Native Messaging hosts, open browser extension setup pages, and start EchoScribe after installation. It also creates a per-user Start Menu shortcut under `EchoScribe\EchoScribe.lnk`.
 
-Autostart is implemented as a per-user Startup shortcut named `EchoScribe.lnk`. The Native Host is not started at login; browsers start it on demand when the extension sends a summary request.
+Autostart is implemented as a per-user Startup shortcut named `EchoScribe.lnk`. During setup, old EchoScribe Startup shortcuts and old EchoScribe `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` entries are removed before the current shortcut is written, so autostart points to the selected install folder. The Native Host is not started at login; browsers start it on demand when the extension sends a summary request.
+
+To uninstall, run `uninstall.cmd`. The uninstaller lets you choose separately whether to remove EchoScribe app files, Start Menu and autostart entries, browser Native Messaging registrations, Windows whisper.cpp Local Whisper files, optional legacy WSL Local Whisper files, all local Ollama models, and Ollama itself. Ollama removal is separate because Ollama may be shared with other apps.
 
 The installer and the compatibility-named `scripts\register-chrome-host.ps1` helper do not install browser extensions automatically. They only register the Native Messaging hosts so manually loaded extensions are allowed to start the local bridge executable.
 
@@ -88,7 +93,9 @@ This creates:
 - `publish\chrome-extension\`
 - `publish\firefox-extension\`
 - `publish\install.cmd`
+- `publish\uninstall.cmd`
 - `publish\scripts\install-echoscribe.ps1`
+- `publish\scripts\uninstall-echoscribe.ps1`
 - `EchoScribe-Windows-x64.zip`
 
 Release packages use `appsettings.template.json` as `publish\appsettings.json` by default, so API keys are not bundled. For a private local-only package, pass `-IncludeLocalSettings`; never upload such a package to GitHub releases.
