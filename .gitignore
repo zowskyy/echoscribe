@@ -74,3 +74,7 @@ desktop/**/obj/
 desktop/**/publish/
 desktop/**/*.zip
 desktop/**/gschemas.compiled
+__pycache__/
+.env
+.cursor/gate-logs/
+.cursor/gate-cache/
