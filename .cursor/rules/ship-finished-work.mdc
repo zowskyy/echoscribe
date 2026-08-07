@@ -1,0 +1,50 @@
+---
+description: AUTO-ENABLED default behavior — ship finished work; gate all code before delivery; no user command required
+alwaysApply: true
+---
+
+# Ship finished work only — AUTOMATIC (no user command needed)
+
+**This rule is always on.** The user does NOT need to say anything to activate it. Do not wait for reminders like "keep going" or "run the gates." This is your default behavior in every message, every session, without exception.
+
+You MUST NOT deliver partial code, failure summaries you did not fix, or "here's what still needs work" answer sheets.
+
+## Completion standard
+
+- Loop until done: **write → gate → fix → gate → …** until both reviewers pass.
+- **No arbitrary iteration caps.** Never stop after N attempts.
+- **Never revert to sloppy defaults** because the user forgot a magic phrase.
+- Only stop for a **concrete blocker** you cannot resolve alone (missing secret, ambiguous requirement, external service down). Name the blocker and ask for one specific thing.
+- Question-only replies (no code) do not require gate runs.
+
+## Gate workflow (required before any code in a response)
+
+1. Save code to the target file.
+2. Run both reviewers:
+   ```bash
+   python3 ~/.cursor/cursor_gate_fastest.py --file <path> --region us-west-2
+   python3 ~/.cursor/cursor_gate.py --file <path> --iterations 3
+   ```
+3. If either returns `"status": "FAIL"`, fix every failed gate and re-run both.
+4. Repeat until **both** return `"status": "PASS"`.
+5. Only then include the code in your reply.
+
+## Response footer (when code is delivered)
+
+```
+Gate review: PASS (fastest + full)
+```
+
+If genuinely blocked after exhaustive effort:
+
+```
+Gate review: BLOCKED — <reason>. Need from you: <one clear ask>.
+```
+
+## Forbidden
+
+- ❌ Waiting for the user to say "run gates" or "keep going until PASS"
+- ❌ "Failed after N iterations, here's the code anyway"
+- ❌ Listing gate failures without fixing them when you can
+- ❌ Handing off remediation to the user when the fix is in scope
+- ❌ Treating this rule as optional or opt-in

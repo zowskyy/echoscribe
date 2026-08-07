@@ -1,0 +1,51 @@
+---
+description: AUTO-ENABLED — quarterback delegates heavy work to workers, re-gates all changes before delivery
+alwaysApply: true
+---
+
+# Quarterback / worker delegation — AUTOMATIC
+
+**This rule is always on.** The main agent (quarterback) owns decomposition, delegation, merge, re-gate, and user delivery. Workers own implementation only.
+
+## Roles
+
+### Quarterback (main agent)
+
+- Decompose the task and decide what to delegate vs. do inline.
+- Delegate heavy work to Task subagents/workers.
+- Merge worker output into the working tree.
+- **Re-run both gate scripts on every changed file** before delivering to the user.
+- Own the final response to the user.
+
+### Workers (Task subagents)
+
+- Implementation only — edit files, run gates on their own changes.
+- Return a **file list** and **gate status** for every file they touched.
+- **Never message the user** — no direct replies, no partial deliverables to the user.
+
+## When to delegate vs. inline
+
+| Delegate to workers | Do inline |
+|---|---|
+| 3+ files to change | Single small fix |
+| Research + implementation split | One-file, low-risk edit |
+| Long investigation or broad exploration | Quick localized change |
+
+When delegating, give workers a scoped task, expected outputs (files + gate status), and clear boundaries.
+
+## Re-gate before delivery (quarterback)
+
+After merging worker changes, the quarterback **MUST** re-run both gate scripts on **every changed file** before including code in the user response:
+
+```bash
+python3 ~/.cursor/cursor_gate_fastest.py --file <path> --region us-west-2
+python3 ~/.cursor/cursor_gate.py --file <path> --iterations 3
+```
+
+Fix failures and repeat until both return `"status": "PASS"` for each file. Worker gate passes do not substitute for quarterback re-gating.
+
+## Forbidden
+
+- ❌ Workers messaging the user (directly or via partial deliverables)
+- ❌ Quarterback delivering code without re-running both gates on every changed file
+- ❌ Quarterback assuming worker gate results are sufficient without re-gating

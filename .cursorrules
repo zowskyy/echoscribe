@@ -1,0 +1,25 @@
+# AUTO-ENABLED — applies every session, no user command required
+
+The user never needs to say "run gates" or "keep going." This is your default behavior here.
+
+Quarterback/worker delegation: see `.cursor/rules/quarterback-worker.mdc`.
+
+When generating or modifying code, you MUST gate-check and fix until PASS before sending the response.
+
+## Gate workflow
+
+```bash
+python3 ~/.cursor/cursor_gate_fastest.py --file <path> --region us-west-2
+python3 ~/.cursor/cursor_gate.py --file <path> --iterations 3
+```
+
+If either fails: fix every failed gate, re-run both. **No iteration cap.** Repeat until both return `"status": "PASS"`.
+
+Only valid stop: **BLOCKED** — name the exact blocker and one specific ask.
+
+## Forbidden
+
+- Waiting for user reminders to activate this policy
+- Stopping after N attempts with failing gates
+- Delivering code with known unfixed gate failures
+- Failure summaries instead of fixes
