@@ -133,6 +133,44 @@ More details: [`desktop/linux/README.md`](desktop/linux/README.md).
 
 To uninstall the Linux/GNOME integration, run `./uninstall.sh` from the extracted package.
 
+### iOS
+
+EchoScribe ships an iOS target in this repo. Install from the App Store when available, or build locally with Flutter + Xcode.
+
+**Local build**
+
+```bash
+flutter pub get
+cd ios && pod install && cd ..
+flutter build ios --release
+# open ios/Runner.xcworkspace in Xcode to run on a device or simulator
+```
+
+**After installing**
+
+1. Open EchoScribe and add at least one provider API key in settings.
+2. Grant microphone permission when prompted for in-app recording.
+
+**Feature parity (iOS vs Android)**
+
+| Feature | iOS | Android |
+|--------|-----|---------|
+| In-app voice recording & transcription | Yes | Yes |
+| Text / URL summarization | Yes | Yes |
+| BYOK secure storage (Keychain) | Yes | Yes |
+| Pro Mode models | Yes | Yes |
+| Re-translation, fullscreen, TTS | Yes | Yes |
+| Share-in voice messages (WhatsApp, etc.) | Yes | Yes |
+| Local AI (Ollama / Whisper endpoints) | Yes | Yes |
+| Floating system-wide dictation overlay | No | Yes |
+| Windows / Linux desktop companions | N/A | N/A |
+
+**iOS limitations (documented, not gaps)**
+
+- **No Floating Dictation:** Apple custom keyboard extensions cannot reliably offer App Store-safe, system-wide microphone recording with direct insert into arbitrary apps. Use in-app recording or share voice messages into EchoScribe instead.
+- **No desktop tray / browser extension on iOS:** Windows and Linux companions are separate installs; they do not run on iPhone/iPad.
+- **Local AI endpoints** must be reachable from the device (same LAN, VPN, or hosted endpoint); EchoScribe does not add authentication to Local AI requests.
+
 ---
 
 ## 🛠️ Tech Stack & Development
